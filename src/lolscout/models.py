@@ -62,3 +62,26 @@ class PlayerSummary:
     recent_winrate: float = 0.0
     matches: list[MatchSummary] = field(default_factory=list)
     ranked_available: bool = True
+
+
+@dataclass
+class LiveGameSummary:
+    queue_name: str
+    game_mode: str
+    map_name: str
+    duration_min: int
+    team_size: int
+    enemy_team_size: int
+
+
+@dataclass
+class LiveGameParticipantSummary:
+    game_name: str
+    tag_line: str
+    platform: str
+    in_game: bool
+    champion: str | None = None
+    champion_id: int = 0
+    role: str = "UNKNOWN"
+    game: LiveGameSummary | None = None
+    status_text: str = ""

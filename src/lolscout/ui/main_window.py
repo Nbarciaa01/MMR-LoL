@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, load_config, save_config
-from ..models import MatchSummary, PlayerSummary, RankedEntry
+from ..models import LiveGameParticipantSummary, MatchSummary, PlayerSummary, RankedEntry
 from ..riot_api import RiotApiClient, RiotApiError
 from .theme import APP_STYLESHEET, build_palette
 
@@ -163,6 +163,62 @@ class RankingWorker(QObject):
             return
 
         self.progress.emit("Procesando ranking...")
+        self.finished.emit([summary for summary in summaries if summary is not None])
+
+
+class LiveGameWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, api_key: str, platform: str, players: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self.api_key = api_key
+        self.platform = platform
+        self.players = players
+
+    def _fetch_live_player(self, game_name: str, tag_line: str) -> LiveGameParticipantSummary:
+        client = RiotApiClient(self.api_key)
+        try:
+            return client.fetch_live_game_summary(
+                game_name=game_name,
+                tag_line=tag_line,
+                platform=self.platform,
+            )
+        except Exception as exc:
+            return LiveGameParticipantSummary(
+                game_name=game_name,
+                tag_line=tag_line,
+                platform=self.platform,
+                in_game=False,
+                status_text=f"Error: {exc}",
+            )
+
+    def run(self) -> None:
+        try:
+            total = len(self.players)
+            if total == 0:
+                self.finished.emit([])
+                return
+
+            summaries: list[LiveGameParticipantSummary | None] = [None] * total
+            max_workers = min(3, total)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(self._fetch_live_player, game_name, tag_line): (index, game_name, tag_line)
+                    for index, (game_name, tag_line) in enumerate(self.players)
+                }
+                completed = 0
+                for future in as_completed(future_map):
+                    index, game_name, tag_line = future_map[future]
+                    completed += 1
+                    self.progress.emit(f"Consultando partida {completed}/{total}: {game_name}#{tag_line}")
+                    summaries[index] = future.result()
+        except Exception as exc:  # pragma: no cover
+            self.failed.emit(f"Fallo inesperado: {exc}")
+            return
+
+        self.progress.emit("Procesando partidas activas...")
         self.finished.emit([summary for summary in summaries if summary is not None])
 
 
@@ -356,15 +412,100 @@ class MatchCard(QFrame):
         return pixmap
 
 
+class LiveGameRow(QFrame):
+    def __init__(self, summary: LiveGameParticipantSummary) -> None:
+        super().__init__()
+        self.setObjectName("Card")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(16)
+
+        icon_stack = QWidget()
+        icon_stack.setFixedSize(CHAMPION_ICON_SIZE, CHAMPION_ICON_SIZE)
+
+        icon_label = QLabel(icon_stack)
+        icon_label.setGeometry(0, 0, CHAMPION_ICON_SIZE, CHAMPION_ICON_SIZE)
+        icon_label.setPixmap(MatchCard._load_champion_icon(summary.champion_id))
+        icon_label.setScaledContents(True)
+        icon_label.setStyleSheet("background: transparent;")
+
+        role_label = QLabel(icon_stack)
+        role_label.setGeometry(
+            CHAMPION_ICON_SIZE - ROLE_ICON_SIZE,
+            CHAMPION_ICON_SIZE - ROLE_ICON_SIZE,
+            ROLE_ICON_SIZE,
+            ROLE_ICON_SIZE,
+        )
+        role_label.setPixmap(MatchCard._load_role_icon(summary.role))
+        role_label.setScaledContents(True)
+        role_label.setStyleSheet("background: transparent;")
+
+        left = QVBoxLayout()
+        name_label = QLabel(f"{summary.game_name}#{summary.tag_line}")
+        name_label.setStyleSheet("font-size: 13pt; font-weight: 700;")
+        if summary.in_game:
+            status_text = "En partida"
+        elif summary.status_text == "Fuera de partida":
+            status_text = "Fuera de partida"
+        else:
+            status_text = "No verificable"
+        status_label = QLabel(status_text)
+        status_label.setStyleSheet(
+            "font-weight: 700; color: #54d2a0;" if summary.in_game else "font-weight: 700; color: #ff7d9b;"
+        )
+        detail_label = QLabel(summary.status_text or "Sin datos")
+        detail_label.setObjectName("Muted")
+        detail_label.setWordWrap(True)
+        left.addWidget(name_label)
+        left.addWidget(status_label)
+        left.addWidget(detail_label)
+
+        right = QHBoxLayout()
+        right.setSpacing(12)
+        right.addWidget(
+            StatCard(
+                "Campeon",
+                summary.champion or "N/D",
+                accent="#7cc7ff" if summary.in_game else "#7e8aa3",
+            )
+        )
+        right.addWidget(
+            StatCard(
+                "Rol",
+                summary.role if summary.role != "UNKNOWN" else "N/D",
+                accent="#ffbf69" if summary.in_game else "#7e8aa3",
+            )
+        )
+        right.addWidget(
+            StatCard(
+                "Modo",
+                summary.game.game_mode if summary.game else "N/D",
+                accent="#f58ab3" if summary.in_game else "#7e8aa3",
+            )
+        )
+        right.addWidget(
+            StatCard(
+                "Lobby",
+                f"{summary.game.team_size}v{summary.game.enemy_team_size}" if summary.game else "N/D",
+                accent="#54d2a0" if summary.in_game else "#7e8aa3",
+            )
+        )
+
+        layout.addWidget(icon_stack, 0, Qt.AlignTop)
+        layout.addLayout(left, 2)
+        layout.addLayout(right, 3)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.config = load_config()
         self.worker_thread: QThread | None = None
-        self.worker: SearchWorker | RankingWorker | None = None
+        self.worker: SearchWorker | RankingWorker | LiveGameWorker | None = None
         self.current_summary: PlayerSummary | None = None
         self.visible_matches = 0
         self.ranking_summaries: list[PlayerSummary] = []
+        self.live_game_summaries: list[LiveGameParticipantSummary] = []
 
         self.setWindowTitle("LoL Scout")
         self.resize(1280, 900)
@@ -381,6 +522,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_ranking_tab(), "Ranking")
+        self.tabs.addTab(self._build_live_games_tab(), "En partida")
         self.tabs.addTab(self._build_detail_tab(), "Jugador")
         root.addWidget(self.tabs, 1)
 
@@ -451,6 +593,49 @@ class MainWindow(QMainWindow):
 
         content.addWidget(self._build_sidebar(), 0)
         content.addWidget(self._build_results_panel(), 1)
+        return wrapper
+
+    def _build_live_games_tab(self) -> QWidget:
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(18)
+
+        controls = QFrame()
+        controls.setObjectName("Card")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(20, 18, 20, 18)
+        controls_layout.setSpacing(16)
+
+        info = QVBoxLayout()
+        title = QLabel("Jugadores en partida")
+        title.setStyleSheet("font-size: 18pt; font-weight: 700;")
+        subtitle = QLabel("Comprueba si los jugadores por defecto estan jugando ahora mismo.")
+        subtitle.setObjectName("Muted")
+        info.addWidget(title)
+        info.addWidget(subtitle)
+
+        self.live_games_button = QPushButton("Actualizar partidas")
+        self.live_games_button.clicked.connect(self.start_live_games)
+
+        self.live_games_status_label = QLabel("Pulsa para buscar partidas activas.")
+        self.live_games_status_label.setObjectName("Muted")
+        self.live_games_status_label.setWordWrap(True)
+
+        controls_layout.addLayout(info, 1)
+        controls_layout.addWidget(self.live_games_button)
+
+        self.live_games_area = QScrollArea()
+        self.live_games_area.setWidgetResizable(True)
+        self.live_games_content = QWidget()
+        self.live_games_layout = QVBoxLayout(self.live_games_content)
+        self.live_games_layout.setContentsMargins(0, 0, 0, 0)
+        self.live_games_layout.setSpacing(12)
+        self.live_games_area.setWidget(self.live_games_content)
+
+        layout.addWidget(controls)
+        layout.addWidget(self.live_games_status_label)
+        layout.addWidget(self.live_games_area, 1)
         return wrapper
 
     def _build_sidebar(self) -> QFrame:
@@ -592,9 +777,30 @@ class MainWindow(QMainWindow):
             self.status_label,
         )
 
+    def start_live_games(self) -> None:
+        api_key = self.config.api_key.strip()
+        platform = self.config.default_platform
+        if not api_key:
+            QMessageBox.warning(self, "Configuracion incompleta", "No hay una API Key configurada.")
+            return
+
+        self.config = AppConfig(api_key=api_key, default_platform=platform)
+        save_config(self.config)
+        self.platform_combo.setCurrentText(platform)
+
+        self.live_games_button.setEnabled(False)
+        self.live_games_status_label.setText("Iniciando consulta de partidas...")
+        self.tabs.setCurrentIndex(2)
+        self._start_worker(
+            LiveGameWorker(api_key, platform, RANKING_PLAYERS),
+            self._on_live_games_success,
+            self._on_live_games_failed,
+            self.live_games_status_label,
+        )
+
     def _start_worker(
         self,
-        worker: SearchWorker | RankingWorker,
+        worker: SearchWorker | RankingWorker | LiveGameWorker,
         success_slot: object,
         failed_slot: object,
         progress_label: QLabel,
@@ -629,6 +835,33 @@ class MainWindow(QMainWindow):
         self.ranking_status_label.setText(message)
         QMessageBox.critical(self, "Error", message)
 
+    def _on_live_games_success(self, summaries: list[LiveGameParticipantSummary]) -> None:
+        self.live_games_button.setEnabled(True)
+        in_game_count = sum(1 for summary in summaries if summary.in_game)
+        unverifiable_count = sum(
+            1
+            for summary in summaries
+            if not summary.in_game and summary.status_text not in {"Fuera de partida", ""}
+        )
+        if unverifiable_count == len(summaries) and summaries:
+            self.live_games_status_label.setText(
+                "No se ha podido confirmar el estado en vivo de ningun jugador con las fuentes disponibles."
+            )
+        else:
+            self.live_games_status_label.setText(
+                f"Consulta completada. {in_game_count} de {len(summaries)} jugadores estan en partida."
+            )
+        self.live_game_summaries = sorted(
+            summaries,
+            key=lambda summary: (not summary.in_game, summary.game_name.lower(), summary.tag_line.lower()),
+        )
+        self._render_live_games()
+
+    def _on_live_games_failed(self, message: str) -> None:
+        self.live_games_button.setEnabled(True)
+        self.live_games_status_label.setText(message)
+        QMessageBox.critical(self, "Error", message)
+
     def _render_ranking(self) -> None:
         self._clear_layout(self.ranking_layout)
         if not self.ranking_summaries:
@@ -643,6 +876,19 @@ class MainWindow(QMainWindow):
             row.clicked.connect(self._open_player_from_ranking)
             self.ranking_layout.addWidget(row)
         self.ranking_layout.addStretch(1)
+
+    def _render_live_games(self) -> None:
+        self._clear_layout(self.live_games_layout)
+        if not self.live_game_summaries:
+            empty = QLabel("No hay jugadores para mostrar.")
+            empty.setObjectName("Muted")
+            self.live_games_layout.addWidget(empty)
+            self.live_games_layout.addStretch(1)
+            return
+
+        for summary in self.live_game_summaries:
+            self.live_games_layout.addWidget(LiveGameRow(summary))
+        self.live_games_layout.addStretch(1)
 
     @staticmethod
     def _ranking_score(summary: PlayerSummary) -> int:
@@ -668,7 +914,7 @@ class MainWindow(QMainWindow):
         self.game_name_input.setText(game_name)
         self.tag_line_input.setText(tag_line)
         self.platform_combo.setCurrentText(platform)
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentIndex(2)
         self.start_search()
 
     def render_summary(self, summary: PlayerSummary) -> None:
