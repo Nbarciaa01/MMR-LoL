@@ -5,6 +5,8 @@ build/
 dist/
 *.spec
 *.log
+.env
+discord_avatars/
 opgg_*.html
 ugg_*.html
 log_*.html

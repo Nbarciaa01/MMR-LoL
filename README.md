@@ -1,17 +1,15 @@
 # LoL Scout
 
-Aplicacion de escritorio en Python para Windows que consulta la API oficial de Riot Games y muestra:
+Aplicacion de escritorio en Python para Windows que consulta fuentes externas de estadisticas y muestra:
 
 - Historial reciente de partidas
 - Winrate
 - Elo/rango
-- MMR estimado
 - KDA, campeones y resumen de rendimiento
 
 ## Requisitos
 
 - Python 3.11 o superior
-- Una API Key de Riot Games: https://developer.riotgames.com/
 
 ## Instalacion
 
@@ -22,19 +20,41 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Para cargar automaticamente los avatares de Discord del ranking en desarrollo, crea un archivo `.env` en la raiz del proyecto con:
+
+```env
+DISCORD_BOT_TOKEN=tu_bot_token
+DISCORD_GUILD_ID=tu_server_id
+```
+
+La app tambien intentara leer `.env` junto al ejecutable si la lanzas desde `dist\LoLScout.exe`.
+
+## Ejecutable autosuficiente
+
+`build_exe.bat` ahora hace esto antes de compilar:
+
+- lee `userdc_id.json`
+- descarga los avatares de Discord usando el `.env`
+- los empaqueta dentro del ejecutable
+
+Resultado:
+
+- puedes pasar solo `dist\LoLScout.exe`
+- el PC destino no necesita `.env`
+- el token no queda distribuido junto al ejecutable como archivo separado
+
+Para que ese build funcione, en el PC donde compilas si necesitas tener `.env`.
+
 ## Uso
 
 1. Abre la app.
-2. Introduce tu Riot API Key.
-3. Escribe el Riot ID del jugador:
+2. Escribe el Riot ID del jugador:
    - Nombre
    - Tag
-4. Elige la region/plataforma.
-5. Pulsa `Buscar`.
+3. Elige la region/plataforma.
+4. Pulsa `Buscar`.
 
-La aplicacion incluye una API Key precargada por defecto. Si caduca, puedes sustituirla desde la propia interfaz o cambiar el valor por defecto en `src/lolscout/config.py`.
-
-La API oficial no expone el MMR real. La aplicacion muestra un `MMR estimado` calculado a partir del rango actual, LP y rendimiento reciente.
+La configuracion incluye un campo de API Key por compatibilidad con versiones anteriores, pero la app ya no depende de Riot API.
 
 ## Crear .exe para Windows
 
@@ -42,4 +62,4 @@ La API oficial no expone el MMR real. La aplicacion muestra un `MMR estimado` ca
 build_exe.bat
 ```
 
-El ejecutable quedara en `dist\LoLScout\LoLScout.exe`.
+El ejecutable quedara en `dist\LoLScout.exe`.

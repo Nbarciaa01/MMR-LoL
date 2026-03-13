@@ -1,59 +1,38 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import html
+import json
 import re
+import time
 from typing import Callable
-from urllib.parse import quote
+import unicodedata
+from urllib.parse import quote, quote_plus
 
 import requests
 
-from .models import LiveGameParticipantSummary, LiveGameSummary, MatchSummary, PlayerSummary, RankedEntry
+from .models import (
+    ChampionPlayStat,
+    LiveGameParticipantSummary,
+    LiveGamePlayerDetails,
+    LiveGameSummary,
+    MatchSummary,
+    PlayerSummary,
+    RankedEntry,
+    RolePlayStat,
+    SpectatorSession,
+)
 
 
 class RiotApiError(Exception):
     pass
 
 
-PLATFORM_TO_REGION = {
-    "BR1": "americas",
-    "EUN1": "europe",
-    "EUW1": "europe",
-    "JP1": "asia",
-    "KR": "asia",
-    "LA1": "americas",
-    "LA2": "americas",
-    "ME1": "europe",
-    "NA1": "americas",
-    "OC1": "sea",
-    "PH2": "sea",
-    "RU": "europe",
-    "SG2": "sea",
-    "TH2": "sea",
-    "TR1": "europe",
-    "TW2": "sea",
-    "VN2": "sea",
-}
+MATCH_PAGE_SIZE = 10
+MAX_RECENT_MATCHES = 10
 
-QUEUE_NAMES = {
-    400: "Normal Draft",
-    420: "Ranked Solo/Duo",
-    430: "Normal Blind",
-    440: "Ranked Flex",
-    450: "ARAM",
-    700: "Clash",
-    900: "URF",
-    1700: "Arena",
-}
-MAP_NAMES = {
-    11: "Summoner's Rift",
-    12: "Howling Abyss",
-    21: "Nexus Blitz",
-    30: "Arena",
-}
-
-MATCH_PAGE_SIZE = 20
-MAX_RECENT_MATCHES = 20
 PLATFORM_TO_OPGG_REGION = {
     "BR1": "br",
     "EUN1": "eune",
@@ -93,6 +72,33 @@ PLATFORM_TO_POROFESSOR_REGION = {
     "RU": "ru",
     "TR1": "tr",
 }
+PLATFORM_TO_LEAGUEOFGRAPHS_REGION = {
+    "BR1": "br",
+    "EUN1": "eune",
+    "EUW1": "euw",
+    "KR": "kr",
+    "LA1": "lan",
+    "LA2": "las",
+    "ME1": "me",
+    "NA1": "na",
+    "OC1": "oce",
+    "RU": "ru",
+    "TR1": "tr",
+}
+PLATFORM_TO_RIOT_REGION = {
+    "BR1": "americas",
+    "EUN1": "europe",
+    "EUW1": "europe",
+    "KR": "asia",
+    "LA1": "americas",
+    "LA2": "americas",
+    "ME1": "europe",
+    "NA1": "americas",
+    "OC1": "sea",
+    "RU": "europe",
+    "TR1": "europe",
+}
+
 TIER_ALIASES = {
     "iron": "IRON",
     "bronze": "BRONZE",
@@ -117,25 +123,69 @@ DIVISION_ALIASES = {
 }
 ROLE_ALIASES = {
     "TOP": "TOP",
+    "TOPLANE": "TOP",
+    "TOP LANE": "TOP",
     "JUNGLE": "JUNGLE",
-    "MIDDLE": "MIDDLE",
+    "JGL": "JUNGLE",
+    "JG": "JUNGLE",
     "MID": "MIDDLE",
-    "BOTTOM": "BOTTOM",
-    "BOT": "BOTTOM",
-    "UTILITY": "UTILITY",
-    "SUPPORT": "UTILITY",
-}
-POROFESSOR_ROLE_ALIASES = {
-    "TOP": "TOP",
-    "JUNGLE": "JUNGLE",
-    "MID": "MIDDLE",
+    "MIDLANE": "MIDDLE",
+    "MID LANE": "MIDDLE",
     "MIDDLE": "MIDDLE",
+    "MIDDLE LANE": "MIDDLE",
     "ADC": "BOTTOM",
+    "DUO": "BOTTOM",
+    "DUO_CARRY": "BOTTOM",
+    "CARRY": "BOTTOM",
     "BOTTOM": "BOTTOM",
+    "BOTTOM LANE": "BOTTOM",
     "BOT": "BOTTOM",
+    "BOTLANE": "BOTTOM",
+    "BOT LANE": "BOTTOM",
     "SUPPORT": "UTILITY",
+    "SUP": "UTILITY",
     "UTILITY": "UTILITY",
+    "DUO_SUPPORT": "UTILITY",
+    "ADCARRY": "BOTTOM",
+    "AD CARRY": "BOTTOM",
 }
+LEAGUEOFGRAPHS_ROLE_SLUGS = {
+    "TOP": "top",
+    "JUNGLE": "jungle",
+    "MIDDLE": "middle",
+    "BOTTOM": "adc",
+    "UTILITY": "support",
+}
+SOLOQUEUE_LABELS = (
+    "ranked solo",
+    "ranked solo/duo",
+    "solo/duo",
+    "soloq",
+    "solo queue",
+    "soloqueue",
+)
+TIER_BASE = {
+    "IRON": 800,
+    "BRONZE": 950,
+    "SILVER": 1100,
+    "GOLD": 1275,
+    "PLATINUM": 1450,
+    "EMERALD": 1600,
+    "DIAMOND": 1800,
+    "MASTER": 2050,
+    "GRANDMASTER": 2200,
+    "CHALLENGER": 2350,
+}
+RANK_OFFSET = {"IV": 0, "III": 65, "II": 130, "I": 195}
+
+
+@dataclass
+class ExternalProfile:
+    game_name: str
+    tag_line: str
+    summoner_level: int = 0
+    profile_icon_id: int = 0
+    matches: list[MatchSummary] = field(default_factory=list)
 
 
 @dataclass
@@ -143,98 +193,227 @@ class RiotApiClient:
     api_key: str
     timeout: int = 20
     progress_callback: Callable[[str], None] | None = None
+    session: requests.Session = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.session = requests.Session()
 
     def _emit_progress(self, message: str) -> None:
         if self.progress_callback is not None:
             self.progress_callback(message)
 
-    def _raise_api_error(self, message: str, response: requests.Response) -> None:
-        detail = ""
-        try:
-            payload = response.json()
-            if isinstance(payload, dict):
-                status = payload.get("status")
-                if isinstance(status, dict):
-                    detail = status.get("message", "")
-                else:
-                    detail = payload.get("message", "")
-        except ValueError:
-            detail = response.text.strip()
-
-        if detail:
-            raise RiotApiError(f"{message} Detalle: {detail}")
-        raise RiotApiError(message)
-
-    def _headers(self) -> dict[str, str]:
-        return {"X-Riot-Token": self.api_key.strip()}
-
-    def _get(self, url: str, context: str, **params: object) -> dict | list:
-        try:
-            response = requests.get(
-                url,
-                headers=self._headers(),
-                params=params,
-                timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise RiotApiError(f"{context}: no se pudo conectar con Riot: {exc}") from exc
-
-        if response.status_code == 401:
-            self._raise_api_error(f"{context}: API Key invalida o caducada.", response)
-        if response.status_code == 403:
-            self._raise_api_error(f"{context}: acceso denegado por Riot API.", response)
-        if response.status_code == 404:
-            self._raise_api_error(f"{context}: jugador no encontrado.", response)
-        if response.status_code == 429:
-            self._raise_api_error(
-                f"{context}: limite de peticiones alcanzado. Intentalo de nuevo en unos segundos.",
-                response,
-            )
-        if response.status_code >= 400:
-            self._raise_api_error(f"{context}: error Riot API ({response.status_code}).", response)
-
-        return response.json()
-
-    def _get_or_none_on_404(self, url: str, context: str, **params: object) -> dict | list | None:
-        try:
-            response = requests.get(
-                url,
-                headers=self._headers(),
-                params=params,
-                timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise RiotApiError(f"{context}: no se pudo conectar con Riot: {exc}") from exc
-
-        if response.status_code == 404:
-            return None
-        if response.status_code == 401:
-            self._raise_api_error(f"{context}: API Key invalida o caducada.", response)
-        if response.status_code == 403:
-            self._raise_api_error(f"{context}: acceso denegado por Riot API.", response)
-        if response.status_code == 429:
-            self._raise_api_error(
-                f"{context}: limite de peticiones alcanzado. Intentalo de nuevo en unos segundos.",
-                response,
-            )
-        if response.status_code >= 400:
-            self._raise_api_error(f"{context}: error Riot API ({response.status_code}).", response)
-
-        return response.json()
-
     def _get_text(self, url: str, context: str, headers: dict[str, str] | None = None) -> str:
+        request_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if headers:
+            request_headers.update(headers)
+
         try:
-            response = requests.get(
-                url,
-                headers=headers,
-                timeout=self.timeout,
-            )
+            response = self.session.get(url, headers=request_headers, timeout=self.timeout)
         except requests.RequestException as exc:
             raise RiotApiError(f"{context}: no se pudo conectar: {exc}") from exc
 
+        if response.status_code == 404:
+            raise RiotApiError(f"{context}: jugador no encontrado.")
         if response.status_code >= 400:
-            self._raise_api_error(f"{context}: error HTTP ({response.status_code}).", response)
+            raise RiotApiError(f"{context}: error HTTP ({response.status_code}).")
+
         return response.text
+
+    def _riot_headers(self) -> dict[str, str]:
+        token = self.api_key.strip()
+        if not token:
+            raise RiotApiError("Riot API: falta API Key.")
+        return {"X-Riot-Token": token, "User-Agent": "Mozilla/5.0"}
+
+    def _get_json(self, url: str, context: str) -> dict | list:
+        try:
+            response = self.session.get(url, headers=self._riot_headers(), timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise RiotApiError(f"{context}: no se pudo conectar con Riot: {exc}") from exc
+
+        if response.status_code == 404:
+            raise RiotApiError(f"{context}: no encontrado.")
+        if response.status_code == 401:
+            raise RiotApiError(f"{context}: API Key invalida o caducada.")
+        if response.status_code == 403:
+            raise RiotApiError(f"{context}: acceso denegado.")
+        if response.status_code == 429:
+            raise RiotApiError(f"{context}: limite de peticiones alcanzado.")
+        if response.status_code >= 400:
+            raise RiotApiError(f"{context}: error Riot API ({response.status_code}).")
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RiotApiError(f"{context}: respuesta JSON invalida.") from exc
+
+    def _get_json_or_none_on_404(self, url: str, context: str) -> dict | list | None:
+        try:
+            return self._get_json(url, context)
+        except RiotApiError as exc:
+            if "no encontrado" in str(exc).lower():
+                return None
+            raise
+
+    @staticmethod
+    def _normalize_lookup_name(value: str) -> str:
+        return re.sub(r"\s+", " ", value.strip()).casefold()
+
+    @staticmethod
+    def _clean_html_text(value: str) -> str:
+        return re.sub(r"\s+", " ", html.unescape(value)).strip()
+
+    @staticmethod
+    def _normalize_champion_lookup(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", html.unescape(value))
+        normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+        normalized = re.sub(r"[^a-z0-9]+", "", normalized.casefold())
+        return normalized
+
+    @staticmethod
+    def _normalize_role_text(value: str) -> str:
+        cleaned = re.sub(r"[_\-/]+", " ", html.unescape(value)).strip().upper()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        if not cleaned:
+            return "UNKNOWN"
+
+        direct = ROLE_ALIASES.get(cleaned)
+        if direct:
+            return direct
+
+        compact = cleaned.replace(" ", "")
+        direct = ROLE_ALIASES.get(compact)
+        if direct:
+            return direct
+
+        token_map = (
+            ("JUNGLE", "JUNGLE"),
+            ("JGL", "JUNGLE"),
+            ("JG", "JUNGLE"),
+            ("MIDDLE", "MIDDLE"),
+            ("MID", "MIDDLE"),
+            ("BOTTOM", "BOTTOM"),
+            ("BOT", "BOTTOM"),
+            ("ADC", "BOTTOM"),
+            ("SUPPORT", "UTILITY"),
+            ("SUP", "UTILITY"),
+            ("UTILITY", "UTILITY"),
+            ("TOP", "TOP"),
+        )
+        tokens = set(cleaned.split())
+        for token, normalized in token_map:
+            if token in tokens:
+                return normalized
+
+        return "UNKNOWN"
+
+    def _extract_live_role_from_porofessor(self, body: str) -> str:
+        strong_role_patterns = (
+            r'class="role-([a-z]+)-\d+',
+            r'<div class="position">\s*([^<]+)\s*</div>',
+            r'<div[^>]+class="[^"]*\bposition\b[^"]*"[^>]*>\s*([^<]+)\s*</div>',
+            r'(?:data-role|data-position|data-lane)="([^"]+)"',
+            r'icon-position-(top|jungle|middle|bottom|utility)',
+        )
+
+        for pattern in strong_role_patterns:
+            for match in re.finditer(pattern, body, re.IGNORECASE):
+                for group in match.groups():
+                    if not group:
+                        continue
+                    normalized = self._normalize_role_text(group)
+                    if normalized != "UNKNOWN":
+                        return normalized
+
+        scoped_role_patterns = (
+            r'\b(?:position|role|lane)\b[^>]{0,80}>\s*([^<]*(?:top|jungle|mid|middle|bottom|bot|adc|support|utility)[^<]*)<',
+        )
+        for pattern in scoped_role_patterns:
+            for match in re.finditer(pattern, body, re.IGNORECASE):
+                for group in match.groups():
+                    if not group:
+                        continue
+                    normalized = self._normalize_role_text(group)
+                    if normalized != "UNKNOWN":
+                        return normalized
+
+        return "UNKNOWN"
+
+    def _load_spectator_session(self, platform: str, game_name: str, tag_line: str) -> SpectatorSession | None:
+        regional_route = PLATFORM_TO_RIOT_REGION.get(platform)
+        if not regional_route or not self.api_key.strip():
+            return None
+
+        account = self._get_json_or_none_on_404(
+            f"https://{regional_route}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/"
+            f"{quote(game_name)}/{quote(tag_line)}",
+            context="Riot Account",
+        )
+        if not isinstance(account, dict):
+            return None
+
+        puuid = str(account.get("puuid", "")).strip()
+        if not puuid:
+            return None
+
+        summoner = self._get_json_or_none_on_404(
+            f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{quote(puuid)}",
+            context="Riot Summoner",
+        )
+        if not isinstance(summoner, dict):
+            return None
+
+        summoner_id = str(summoner.get("id", "")).strip()
+        if not summoner_id:
+            return None
+
+        active_game = self._get_json_or_none_on_404(
+            f"https://{platform.lower()}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{quote(summoner_id)}",
+            context="Riot Spectator",
+        )
+        if not isinstance(active_game, dict):
+            return None
+
+        observers = active_game.get("observers")
+        if not isinstance(observers, dict):
+            return None
+
+        encryption_key = str(observers.get("encryptionKey", "")).strip()
+        if not encryption_key:
+            return None
+
+        try:
+            game_id = int(active_game.get("gameId", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if game_id <= 0:
+            return None
+
+        platform_id = str(active_game.get("platformId", platform) or platform).strip() or platform
+        return SpectatorSession(platform_id=platform_id, game_id=game_id, encryption_key=encryption_key)
+
+    @staticmethod
+    def _slug(game_name: str, tag_line: str) -> str:
+        return quote_plus(f"{game_name}-{tag_line}")
+
+    @staticmethod
+    def _ugg_slug_candidates(game_name: str, tag_line: str) -> list[str]:
+        compact_game_name = re.sub(r"\s+", "-", game_name.strip())
+        compact_tag_line = re.sub(r"\s+", "-", tag_line.strip())
+        return [
+            quote_plus(f"{game_name}-{tag_line}").lower(),
+            quote(f"{compact_game_name}-{compact_tag_line}", safe="-").lower(),
+        ]
+
+    @classmethod
+    def build_opgg_profile_url(cls, platform: str, game_name: str, tag_line: str) -> str | None:
+        opgg_region = PLATFORM_TO_OPGG_REGION.get(platform)
+        if not opgg_region:
+            return None
+        return f"https://op.gg/lol/summoners/{opgg_region}/{cls._slug(game_name, tag_line)}"
 
     def _parse_opgg_rank_block(self, text: str, label: str, queue_type: str) -> dict | None:
         normalized_text = " ".join(text.split())
@@ -298,43 +477,123 @@ class RiotApiClient:
         }
 
     @staticmethod
-    def _extract_total_games(section: str) -> int | None:
-        wins_losses_match = re.search(r"\b(\d+)\s*W\s+(\d+)\s*L\b", section, re.IGNORECASE)
-        if wins_losses_match:
-            return int(wins_losses_match.group(1)) + int(wins_losses_match.group(2))
+    def _parse_opgg_action_payload(payload: str) -> dict | None:
+        result: dict | None = None
+        for line in payload.splitlines():
+            stripped = line.strip()
+            if not stripped or ":" not in stripped:
+                continue
+            prefix, raw_json = stripped.split(":", 1)
+            if not prefix.isdigit():
+                continue
+            raw_json = raw_json.strip()
+            if not raw_json or raw_json.startswith("E{"):
+                continue
+            try:
+                parsed = json.loads(raw_json)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and "status" in parsed:
+                result = parsed
+        return result
 
-        for pattern in (
-            r"\b(\d+)\s+(?:Played|Games?|Matches)\b",
-            r"\b(?:Played|Games?|Matches)\s+(\d+)\b",
-        ):
-            match = re.search(pattern, section, re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
+    def _post_opgg_action(
+        self,
+        url: str,
+        action_id: str,
+        params: dict[str, object],
+        context: str,
+    ) -> dict | None:
+        try:
+            response = self.session.post(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "text/x-component",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Content-Type": "text/plain;charset=UTF-8",
+                    "next-action": action_id,
+                    "Origin": "https://op.gg",
+                    "Referer": url,
+                },
+                data=json.dumps([params]),
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise RiotApiError(f"{context}: no se pudo conectar con OP.GG.") from exc
 
-    def _normalize_role(self, participant: dict) -> str:
-        raw_role = (
-            participant.get("individualPosition")
-            or participant.get("teamPosition")
-            or participant.get("lane")
-            or ""
+        if response.status_code >= 400:
+            raise RiotApiError(f"{context}: error HTTP ({response.status_code}).")
+
+        return self._parse_opgg_action_payload(response.text)
+
+    @staticmethod
+    def _extract_opgg_refresh_context(page: str) -> tuple[str, str, str] | None:
+        puuid_match = re.search(r'"puuid":"([^"]+)"', page)
+        updated_at_match = re.search(r'"updatedAt":"([^"]+)"', page)
+        renewable_at_match = re.search(r'"initRenewableAt":"([^"]+)"', page)
+        if not puuid_match or not updated_at_match or not renewable_at_match:
+            return None
+        return puuid_match.group(1), updated_at_match.group(1), renewable_at_match.group(1)
+
+    @staticmethod
+    def _is_iso_datetime_due(value: str) -> bool:
+        try:
+            due_at = datetime.fromisoformat(value)
+        except ValueError:
+            return True
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        return due_at <= datetime.now(tz=due_at.tzinfo)
+
+    def _refresh_opgg_profile(self, url: str, region: str, page: str) -> str:
+        context = self._extract_opgg_refresh_context(page)
+        if context is None:
+            return page
+
+        puuid, _, renewable_at = context
+        if not self._is_iso_datetime_due(renewable_at):
+            return page
+
+        renew_data = self._post_opgg_action(
+            url,
+            "405a04669583947dc03eb8c7f367adf28c8f714e86",
+            {"region": region, "puuid": puuid, "isPremiumPrimary": False},
+            "OP.GG refresh",
         )
-        normalized = ROLE_ALIASES.get(str(raw_role).upper(), "")
-        return normalized or "UNKNOWN"
+        if not renew_data:
+            return page
+
+        status = str(renew_data.get("status", "")).upper()
+        deadline = datetime.now(timezone.utc).timestamp() + min(8, self.timeout)
+        while status == "RENEWING" and datetime.now(timezone.utc).timestamp() < deadline:
+            delay_ms = int(renew_data.get("delay", 1000) or 1000)
+            time.sleep(max(0.25, min(delay_ms / 1000.0, 2.0)))
+            renew_data = self._post_opgg_action(
+                url,
+                "400c02bdfd8c90756a329b312a7455e73880ad43ec",
+                {"region": region, "puuid": puuid},
+                "OP.GG refresh",
+            )
+            if not renew_data:
+                break
+            status = str(renew_data.get("status", "")).upper()
+
+        if status not in {"RENEWAL_FINISH", "TOO_MANY_RENEWALS"}:
+            return page
+        return self._get_text(url, context="OP.GG perfil")
 
     def _load_ranked_from_opgg(self, platform: str, game_name: str, tag_line: str) -> list[dict]:
         opgg_region = PLATFORM_TO_OPGG_REGION.get(platform)
         if not opgg_region:
             return []
 
-        slug = f"{game_name}-{tag_line}"
-        url = f"https://op.gg/lol/summoners/{opgg_region}/{quote(slug)}"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        page = self._get_text(url, context="Fallback OP.GG", headers=headers)
-
+        url = f"https://op.gg/lol/summoners/{opgg_region}/{self._slug(game_name, tag_line)}"
+        page = self._get_text(url, context="OP.GG perfil")
+        try:
+            page = self._refresh_opgg_profile(url, opgg_region, page)
+        except RiotApiError:
+            pass
         text = html.unescape(re.sub(r"<[^>]+>", " ", page))
         soloq = self._parse_opgg_rank_block(text, "Ranked Solo/Duo", "RANKED_SOLO_5x5")
         flex = self._parse_opgg_rank_block(text, "Ranked Flex", "RANKED_FLEX_SR")
@@ -351,24 +610,36 @@ class RiotApiClient:
         if not ugg_region:
             return None
 
-        slug = f"{game_name}-{tag_line}".lower()
-        url = f"https://u.gg/lol/profile/{ugg_region}/{quote(slug)}/overview"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        page = self._get_text(url, context="Fallback U.GG", headers=headers)
-        text = html.unescape(re.sub(r"<[^>]+>", " ", page))
-        normalized_text = " ".join(text.split())
+        for slug in self._ugg_slug_candidates(game_name, tag_line):
+            try:
+                page = self._get_text(f"https://u.gg/lol/profile/{ugg_region}/{slug}/overview", context="U.GG perfil")
+            except RiotApiError:
+                continue
 
-        patterns = [
-            r"Ranked Solo(?:/Duo)?\s+.*?\b(\d+(?:\.\d+)?)%\s+Win Rate\b",
-            r"Ranked Solo(?:/Duo)?\s+.*?\b(\d+(?:\.\d+)?)%\b",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, normalized_text, re.IGNORECASE)
+            text = html.unescape(re.sub(r"<[^>]+>", " ", page))
+            normalized_text = " ".join(text.split())
+            for pattern in (
+                r"Ranked Solo(?:/Duo)?\s+.*?\b(\d+(?:\.\d+)?)%\s+Win Rate\b",
+                r"Ranked Solo(?:/Duo)?\s+.*?\b(\d+(?:\.\d+)?)%\b",
+            ):
+                match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if match:
+                    return float(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_total_games(section: str) -> int | None:
+        wins_losses_match = re.search(r"\b(\d+)\s*W\s+(\d+)\s*L\b", section, re.IGNORECASE)
+        if wins_losses_match:
+            return int(wins_losses_match.group(1)) + int(wins_losses_match.group(2))
+
+        for pattern in (
+            r"\b(\d+)\s+(?:Played|Games?|Matches)\b",
+            r"\b(?:Played|Games?|Matches)\s+(\d+)\b",
+        ):
+            match = re.search(pattern, section, re.IGNORECASE)
             if match:
-                return float(match.group(1))
+                return int(match.group(1))
         return None
 
     def _load_games_from_opgg(self, platform: str, game_name: str, tag_line: str) -> int | None:
@@ -389,33 +660,384 @@ class RiotApiClient:
         if not ugg_region:
             return None
 
-        slug = f"{game_name}-{tag_line}".lower()
-        url = f"https://u.gg/lol/profile/{ugg_region}/{quote(slug)}/overview"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        page = self._get_text(url, context="Fallback U.GG", headers=headers)
-        text = html.unescape(re.sub(r"<[^>]+>", " ", page))
-        normalized_text = " ".join(text.split())
-        patterns = (
-            r"Overview Champion Stats Live Game Highlights Ranked Solo(?:/Duo)?\s+.*?(?:Ranked Flex|Your Highlights|Champion Stats|$)",
-            r"Ranked Solo(?:/Duo)?\s+[A-Za-z]+\s+(?:[1-4]|IV|III|II|I)\s+\d+\s+LP.*?(?:Ranked Flex|Your Highlights|Champion Stats|$)",
+        for slug in self._ugg_slug_candidates(game_name, tag_line):
+            try:
+                page = self._get_text(f"https://u.gg/lol/profile/{ugg_region}/{slug}/overview", context="U.GG perfil")
+            except RiotApiError:
+                continue
+
+            text = html.unescape(re.sub(r"<[^>]+>", " ", page))
+            normalized_text = " ".join(text.split())
+            patterns = (
+                r"Overview Champion Stats Live Game Highlights Ranked Solo(?:/Duo)?\s+.*?(?:Ranked Flex|Your Highlights|Champion Stats|$)",
+                r"Ranked Solo(?:/Duo)?\s+[A-Za-z]+\s+(?:[1-4]|IV|III|II|I)\s+\d+\s+LP.*?(?:Ranked Flex|Your Highlights|Champion Stats|$)",
+            )
+            for pattern in patterns:
+                for match in re.finditer(pattern, normalized_text, re.IGNORECASE):
+                    total_games = self._extract_total_games(match.group(0))
+                    if total_games is not None:
+                        return total_games
+
+            total_games = self._extract_total_games(normalized_text)
+            if total_games is not None:
+                return total_games
+        return None
+
+    def _load_profile_from_ugg(self, platform: str, game_name: str, tag_line: str) -> ExternalProfile | None:
+        ugg_region = PLATFORM_TO_UGG_REGION.get(platform)
+        if not ugg_region:
+            return None
+
+        for slug in self._ugg_slug_candidates(game_name, tag_line):
+            try:
+                page = self._get_text(f"https://u.gg/lol/profile/{ugg_region}/{slug}/overview", context="U.GG perfil")
+            except RiotApiError:
+                continue
+
+            canonical_game_name = game_name
+            canonical_tag_line = tag_line
+            summoner_level = 0
+            profile_icon_id = 0
+
+            state_match = re.search(
+                r"window\.__APOLLO_STATE__\s*=\s*(\{.*?\})\s*</script>",
+                page,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if state_match:
+                try:
+                    state = json.loads(state_match.group(1))
+                except json.JSONDecodeError:
+                    state = None
+
+                if isinstance(state, dict):
+                    for key, value in state.items():
+                        if not isinstance(key, str) or not key.startswith("profileInitSimple("):
+                            continue
+                        if not isinstance(value, dict):
+                            continue
+                        player_info = value.get("playerInfo")
+                        if not isinstance(player_info, dict):
+                            continue
+                        summoner_level = int(player_info.get("summonerLevel", 0) or 0)
+                        profile_icon_id = int(player_info.get("iconId", 0) or 0)
+                        canonical_game_name = self._clean_html_text(
+                            str(player_info.get("riotUserName") or canonical_game_name)
+                        )
+                        canonical_tag_line = self._clean_html_text(
+                            str(player_info.get("riotTagLine") or canonical_tag_line)
+                        )
+                        break
+
+            if summoner_level <= 0:
+                level_match = re.search(
+                    r'>\s*(\d+)\s*</div>\s*<div class="relative w-full h-full.*?Summoner profile icon',
+                    page,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if level_match:
+                    summoner_level = int(level_match.group(1))
+
+            if profile_icon_id <= 0:
+                icon_match = re.search(r"/profileicon/(\d+)\.png", page, re.IGNORECASE)
+                if icon_match:
+                    profile_icon_id = int(icon_match.group(1))
+
+            if summoner_level > 0 or profile_icon_id > 0:
+                return ExternalProfile(
+                    game_name=canonical_game_name,
+                    tag_line=canonical_tag_line,
+                    summoner_level=summoner_level,
+                    profile_icon_id=profile_icon_id,
+                    matches=[],
+                )
+        return None
+
+    def _load_profile_from_leagueofgraphs(self, platform: str, game_name: str, tag_line: str) -> ExternalProfile:
+        region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
+        if not region:
+            raise RiotApiError("LeagueOfGraphs: plataforma no soportada.")
+
+        url = f"https://www.leagueofgraphs.com/summoner/{region}/{self._slug(game_name, tag_line)}"
+        page = self._get_text(url, context="LeagueOfGraphs perfil")
+
+        title_match = re.search(r"<title>([^#<]+)#([^<(]+)\s*\(", page, re.IGNORECASE)
+        canonical_game_name = self._clean_html_text(title_match.group(1)) if title_match else game_name
+        canonical_tag_line = self._clean_html_text(title_match.group(2)) if title_match else tag_line
+
+        level_match = re.search(
+            r"\bbannerSubtitle\b[^>]*>\s*Level\s+(\d+)\b",
+            page,
+            re.IGNORECASE | re.DOTALL,
         )
-        for pattern in patterns:
-            for match in re.finditer(pattern, normalized_text, re.IGNORECASE):
-                total_games = self._extract_total_games(match.group(0))
-                if total_games is not None:
-                    return total_games
-        return self._extract_total_games(normalized_text)
+        if not level_match:
+            level_match = re.search(
+                r">\s*Level\s+(\d+)\b",
+                page,
+                re.IGNORECASE,
+            )
+        icon_match = re.search(
+            r'Summoner profile icon"\s*/?>|Summoner profile icon',
+            page,
+            re.IGNORECASE,
+        )
+        profile_icon_id = 0
+        summoner_level = int(level_match.group(1)) if level_match else 0
+        if icon_match:
+            around_icon = page[max(0, icon_match.start() - 600):icon_match.end() + 600]
+        else:
+            around_icon = page
+        icon_id_match = re.search(r"/profileicon/(\d+)\.png|/summonerIcons/[^/]+/\d+/(\d+)\.png", around_icon, re.IGNORECASE)
+        if icon_id_match:
+            profile_icon_id = int(icon_id_match.group(1) or icon_id_match.group(2) or 0)
+
+        if summoner_level <= 0 or profile_icon_id <= 0:
+            ugg_profile = self._load_profile_from_ugg(platform, canonical_game_name, canonical_tag_line)
+            if ugg_profile is not None:
+                if summoner_level <= 0:
+                    summoner_level = ugg_profile.summoner_level
+                if profile_icon_id <= 0:
+                    profile_icon_id = ugg_profile.profile_icon_id
+                if not title_match:
+                    canonical_game_name = ugg_profile.game_name
+                    canonical_tag_line = ugg_profile.tag_line
+
+        matches = self._load_recent_matches_from_leagueofgraphs(page)
+        return ExternalProfile(
+            game_name=canonical_game_name,
+            tag_line=canonical_tag_line,
+            summoner_level=summoner_level,
+            profile_icon_id=profile_icon_id,
+            matches=matches,
+        )
+
+    def _load_recent_matches_from_leagueofgraphs(self, page: str) -> list[MatchSummary]:
+        row_pattern = re.compile(
+            r'<td class="championCellLight">\s*<a href="/match/[^/]+/(?P<match_id>\d+)#participant\d+">.*?'
+            r'class="champion-(?P<champion_id>\d+)-48\s+"[^>]*alt="(?P<champion>[^"]+)".*?'
+            r'<div class="victoryDefeatText (?P<result>victory|defeat|remade)">(?P<result_text>[^<]+)</div>.*?'
+            r'<div class="gameMode[^"]*"[^>]*tooltip-vertical-offset="0" tooltip="(?P<queue>[^"]+)">.*?</div>.*?'
+            r'<div class="gameDuration">\s*(?P<duration>\d+)min\s*(?P<seconds>\d+)s\s*</div>.*?'
+            r'<div class="kda">\s*<span class="kills">(?P<kills>\d+)</span>.*?'
+            r'<span class="deaths">(?P<deaths>\d+)</span>.*?'
+            r'<span class="assists">(?P<assists>\d+)</span>.*?'
+            r'<div class="cs">\s*<span class="number">(?P<cs>\d+)</span>\s*CS',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        matches: list[MatchSummary] = []
+        for match in row_pattern.finditer(page):
+            kills = int(match.group("kills"))
+            deaths = int(match.group("deaths"))
+            assists = int(match.group("assists"))
+            duration_min = max(1, int(match.group("duration")))
+            matches.append(
+                MatchSummary(
+                    match_id=match.group("match_id"),
+                    champion=self._clean_html_text(match.group("champion")),
+                    champion_id=int(match.group("champion_id")),
+                    role="UNKNOWN",
+                    queue_name=self._clean_html_text(match.group("queue")),
+                    won=match.group("result") == "victory",
+                    kills=kills,
+                    deaths=deaths,
+                    assists=assists,
+                    cs=int(match.group("cs")),
+                    duration_min=duration_min,
+                    damage=0,
+                    gold=0,
+                    kda=round((kills + assists) / max(1, deaths), 2),
+                )
+            )
+            if len(matches) >= MATCH_PAGE_SIZE:
+                break
+        return matches[:MAX_RECENT_MATCHES]
+
+    def _load_leagueofgraphs_ranked(self, platform: str, game_name: str, tag_line: str) -> list[dict]:
+        region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
+        if not region:
+            return []
+
+        url = f"https://www.leagueofgraphs.com/summoner/{region}/{self._slug(game_name, tag_line)}"
+        page = self._get_text(url, context="LeagueOfGraphs perfil")
+        entries: list[dict] = []
+        patterns = (
+            ("Ranked Solo/Duo", "RANKED_SOLO_5x5", r"Ranked Solo/Duo"),
+            ("Ranked Flex", "RANKED_FLEX_SR", r"Ranked Flex"),
+        )
+        for label, queue_type, tooltip_label in patterns:
+            pattern = re.compile(
+                rf"<highlight>{tooltip_label}</highlight><br/>.*?player reached\s+([A-Za-z]+)\s+([IV]+)"
+                rf".*?At the end of the season, this player was\s+([A-Za-z]+)\s+([IV]+)",
+                re.IGNORECASE | re.DOTALL,
+            )
+            match = pattern.search(page)
+            if match:
+                tier = TIER_ALIASES.get(match.group(3).lower())
+                rank = DIVISION_ALIASES.get(match.group(4).upper(), match.group(4).upper())
+                if tier:
+                    entries.append(
+                        {
+                            "queueType": queue_type,
+                            "tier": tier,
+                            "rank": rank,
+                            "leaguePoints": 0,
+                            "wins": 0,
+                            "losses": 0,
+                        }
+                    )
+                    continue
+
+            summary_pattern = re.compile(
+                rf"{tooltip_label}.*?([A-Za-z]+)\s+([IV]+).*?Wins:\s*(\d+)\s*\(([\d.]+)%\)",
+                re.IGNORECASE | re.DOTALL,
+            )
+            summary_match = summary_pattern.search(page)
+            if not summary_match:
+                continue
+            tier = TIER_ALIASES.get(summary_match.group(1).lower())
+            rank = DIVISION_ALIASES.get(summary_match.group(2).upper(), summary_match.group(2).upper())
+            wins = int(summary_match.group(3))
+            winrate = float(summary_match.group(4))
+            total_games = max(wins, round(wins / max(0.01, winrate / 100.0)))
+            losses = max(0, total_games - wins)
+            if tier:
+                entries.append(
+                    {
+                        "queueType": queue_type,
+                        "tier": tier,
+                        "rank": rank,
+                        "leaguePoints": 0,
+                        "wins": wins,
+                        "losses": losses,
+                        "winrate": winrate,
+                    }
+                )
+        return entries
+
+    def _parse_leagueofgraphs_champion_table(self, page: str, limit: int | None = None) -> list[ChampionPlayStat]:
+        table_match = re.search(
+            r'<table class="data_table summoner_champions_details_table sortable_table">(.*?)</table>',
+            page,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not table_match:
+            return []
+
+        champions: list[ChampionPlayStat] = []
+        row_pattern = re.compile(r"<tr[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+        for row in row_pattern.findall(table_match.group(1)):
+            champion_id_match = re.search(r'class="champion-(?P<champion_id>\d+)-[\d-]*"', row, re.IGNORECASE)
+            champion_name_match = re.search(r'alt="(?P<champion>[^"]+)"', row, re.IGNORECASE)
+            played_match = re.search(r'<td[^>]+data-sort-value="(?P<played>\d+)"', row, re.IGNORECASE)
+            if not champion_id_match or not champion_name_match or not played_match:
+                continue
+            champions.append(
+                ChampionPlayStat(
+                    champion=self._clean_html_text(champion_name_match.group("champion")),
+                    champion_id=int(champion_id_match.group("champion_id")),
+                    games=int(played_match.group("played")),
+                )
+            )
+            if limit is not None and len(champions) >= limit:
+                break
+        return champions
+
+    def _load_ranked_preferences_from_leagueofgraphs(
+        self,
+        platform: str,
+        game_name: str,
+        tag_line: str,
+    ) -> tuple[list[ChampionPlayStat], list[RolePlayStat]]:
+        region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
+        if not region:
+            return [], []
+
+        base_url = f"https://www.leagueofgraphs.com/summoner/champions/{region}/{self._slug(game_name, tag_line)}"
+        champions_page = self._get_text(f"{base_url}/soloqueue", context="LeagueOfGraphs campeones SoloQ")
+        leagueofgraphs_champions = self._parse_leagueofgraphs_champion_table(champions_page, limit=5)
+        leagueofgraphs_icon_map = {
+            self._normalize_champion_lookup(champion.champion): champion.champion_id
+            for champion in self._parse_leagueofgraphs_champion_table(champions_page)
+            if champion.champion_id > 0
+        }
+
+        opgg_champions = self._load_ranked_preferences_from_opgg(platform, game_name, tag_line)
+        if opgg_champions:
+            merged: list[ChampionPlayStat] = []
+            for champion in opgg_champions:
+                merged.append(
+                    ChampionPlayStat(
+                        champion=champion.champion,
+                        champion_id=leagueofgraphs_icon_map.get(
+                            self._normalize_champion_lookup(champion.champion),
+                            champion.champion_id,
+                        ),
+                        games=champion.games,
+                    )
+                )
+            return merged[:5], []
+
+        return leagueofgraphs_champions, []
+
+    def _load_ranked_preferences_from_opgg(
+        self,
+        platform: str,
+        game_name: str,
+        tag_line: str,
+    ) -> list[ChampionPlayStat]:
+        opgg_region = PLATFORM_TO_OPGG_REGION.get(platform)
+        if not opgg_region:
+            return []
+
+        url = f"https://op.gg/lol/summoners/{opgg_region}/{self._slug(game_name, tag_line)}?queue_type=SOLORANKED"
+        page = self._get_text(url, context="OP.GG campeones SoloQ")
+        description_match = re.search(
+            r'<meta name="description" content="([^"]+)"',
+            page,
+            re.IGNORECASE,
+        )
+        if not description_match:
+            return []
+
+        description = html.unescape(description_match.group(1))
+        entries = re.findall(r"([A-Za-z0-9' .:-]+?)\s*-\s*(\d+)Win\s+(\d+)Lose", description, re.IGNORECASE)
+        champions: list[ChampionPlayStat] = []
+        for champion_name, wins, losses in entries[:5]:
+            champions.append(
+                ChampionPlayStat(
+                    champion=self._clean_html_text(champion_name),
+                    champion_id=0,
+                    games=int(wins) + int(losses),
+                )
+            )
+        return champions
 
     @staticmethod
-    def _normalize_lookup_name(value: str) -> str:
-        return re.sub(r"\s+", " ", value.strip()).casefold()
+    def _fallback_most_played_champions(matches: list[MatchSummary]) -> list[ChampionPlayStat]:
+        champion_counts: dict[tuple[str, int], int] = {}
+        for match in matches:
+            queue_name = match.queue_name.casefold()
+            if not any(label in queue_name for label in SOLOQUEUE_LABELS):
+                continue
+            key = (match.champion, match.champion_id)
+            champion_counts[key] = champion_counts.get(key, 0) + 1
+        ordered = sorted(champion_counts.items(), key=lambda item: (-item[1], item[0][0].casefold()))
+        return [
+            ChampionPlayStat(champion=champion, champion_id=champion_id, games=games)
+            for (champion, champion_id), games in ordered[:5]
+        ]
 
     @staticmethod
-    def _clean_html_text(value: str) -> str:
-        return re.sub(r"\s+", " ", html.unescape(value)).strip()
+    def _fallback_most_played_roles(matches: list[MatchSummary]) -> list[RolePlayStat]:
+        role_counts: dict[str, int] = {}
+        for match in matches:
+            role = match.role
+            if role == "UNKNOWN":
+                continue
+            role_counts[role] = role_counts.get(role, 0) + 1
+        ordered = sorted(role_counts.items(), key=lambda item: (-item[1], item[0]))
+        return [RolePlayStat(role=role, games=games) for role, games in ordered[:3]]
 
     @staticmethod
     def _parse_porofessor_duration_minutes(source: str) -> int:
@@ -449,13 +1071,9 @@ class RiotApiClient:
 
         slug = quote(f"{game_name}-{tag_line}", safe="-")
         url = f"https://porofessor.gg/partial/live-partial/{porofessor_region}/{slug}"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-            "X-Requested-With": "XMLHttpRequest",
-        }
+        headers = {"X-Requested-With": "XMLHttpRequest"}
         try:
-            source = self._get_text(url, context="Fallback Porofessor live", headers=headers)
+            source = self._get_text(url, context="Porofessor partida en vivo", headers=headers)
         except RiotApiError:
             return None
 
@@ -479,36 +1097,33 @@ class RiotApiClient:
                 status_text="No se pudo consultar la fuente externa de partida en vivo",
             )
 
-        queue_match = re.search(r"<h2[^>]*class=\"left relative\"[^>]*>\s*(.*?)\s*<span[^>]*id=\"gameDuration\"", source, re.S | re.I)
+        queue_match = re.search(
+            r'<h2[^>]*class="left relative"[^>]*>\s*(.*?)\s*<span[^>]*id="gameDuration"',
+            source,
+            re.IGNORECASE | re.DOTALL,
+        )
         queue_name = self._clean_html_text(queue_match.group(1)) if queue_match else "Partida activa"
         duration_min = self._parse_porofessor_duration_minutes(source)
 
         target_key = self._normalize_lookup_name(f"{game_name}#{tag_line}")
-        team_counts = {"blue": 0, "red": 0}
         card_start_pattern = re.compile(
             r'<div class="card card-\d+" data-summonername="(?P<name>[^"]+)"[^>]*>',
-            re.I,
+            re.IGNORECASE,
         )
         card_starts = list(card_start_pattern.finditer(source))
-        selected_name: str | None = None
-        selected_body: str | None = None
+        participants = self._parse_live_game_players_from_porofessor(source, card_starts)
+        if not participants:
+            return None
 
-        for index, match in enumerate(card_starts):
-            body_start = match.end()
-            body_end = card_starts[index + 1].start() if index + 1 < len(card_starts) else source.find("</ul>", body_start)
-            if body_end == -1:
-                body_end = len(source)
-            body = source[body_start:body_end]
-            team_match = re.search(r'<div class="cardHeader\s+(blue|red)"', body, re.I)
-            if team_match:
-                team_counts[team_match.group(1).lower()] += 1
-
-            raw_name = html.unescape(match.group("name"))
-            if self._normalize_lookup_name(raw_name) == target_key:
-                selected_name = raw_name
-                selected_body = body
-
-        if selected_body is None:
+        selected_player = next(
+            (
+                participant
+                for participant in participants
+                if self._normalize_lookup_name(f"{participant.game_name}#{participant.tag_line}") == target_key
+            ),
+            None,
+        )
+        if selected_player is None:
             return LiveGameParticipantSummary(
                 game_name=canonical_game_name,
                 tag_line=canonical_tag_line,
@@ -517,230 +1132,142 @@ class RiotApiClient:
                 status_text="La fuente externa no encontro al jugador dentro de la partida",
             )
 
-        body = selected_body
-        if selected_name and "#" in selected_name:
-            canonical_game_name, canonical_tag_line = selected_name.split("#", 1)
-        team_match = re.search(r'<div class="cardHeader\s+(blue|red)"', body, re.I)
-        team_color = team_match.group(1).lower() if team_match else "blue"
-        champion_match = re.search(
-            r'<div class="box championBox.*?<img [^>]*alt="(?P<champion>[^"]+)"[^>]*class="champion-\d+-48',
-            body,
-            re.S | re.I,
-        )
-        role_match = re.search(
-            r'data-name="rolesBox".*?<div class="currentRole[^"]*">.*?<img [^>]*alt="(?P<role>[^"]+)"',
-            body,
-            re.S | re.I,
-        )
-
-        champion = html.unescape(champion_match.group("champion")) if champion_match else "Campeon desconocido"
-        role_raw = html.unescape(role_match.group("role")) if role_match else "UNKNOWN"
-        role = POROFESSOR_ROLE_ALIASES.get(role_raw.strip().upper(), self._normalize_role({"teamPosition": role_raw}))
-
-        team_size = team_counts.get(team_color, 0)
-        enemy_color = "red" if team_color == "blue" else "blue"
-        enemy_team_size = team_counts.get(enemy_color, 0)
-        map_name = self._infer_map_name_from_queue(queue_name)
+        canonical_game_name = selected_player.game_name
+        canonical_tag_line = selected_player.tag_line
+        team_size = sum(1 for participant in participants if participant.team_color == selected_player.team_color)
+        enemy_team_size = sum(1 for participant in participants if participant.team_color != selected_player.team_color)
+        queue_name = queue_name or "Partida activa"
         game = LiveGameSummary(
             queue_name=queue_name,
             game_mode=queue_name,
-            map_name=map_name,
+            map_name=self._infer_map_name_from_queue(queue_name),
             duration_min=duration_min,
             team_size=team_size,
             enemy_team_size=enemy_team_size,
         )
+        status_parts = [
+            game.queue_name,
+            f"{game.duration_min} min" if game.duration_min > 0 else "Duracion N/D",
+            game.map_name,
+        ]
 
         return LiveGameParticipantSummary(
             game_name=canonical_game_name,
             tag_line=canonical_tag_line,
             platform=platform,
             in_game=True,
-            champion=champion,
-            champion_id=0,
-            role=role,
+            champion=selected_player.champion or "Campeon desconocido",
+            champion_id=selected_player.champion_id,
+            role=selected_player.role,
             game=game,
-            status_text=" - ".join(
-                part
-                for part in [
-                    queue_name,
-                    f"{duration_min} min" if duration_min > 0 else "",
-                    map_name,
-                ]
-                if part
-            ),
+            status_text=" - ".join(status_parts),
+            participants=copy.deepcopy(participants),
         )
 
-    def _load_ranked_entries(
+    def _parse_live_game_players_from_porofessor(
         self,
-        platform: str,
-        puuid: str,
-        summoner_id: str | None,
-        legacy_summoner_name: str | None = None,
-    ) -> tuple[list[dict], bool]:
-        league_entries: list[dict] = []
-        ranked_available = True
+        source: str,
+        card_starts: list[re.Match[str]],
+    ) -> list[LiveGamePlayerDetails]:
+        participants: list[LiveGamePlayerDetails] = []
+        for index, match in enumerate(card_starts):
+            body_start = match.end()
+            body_end = card_starts[index + 1].start() if index + 1 < len(card_starts) else len(source)
+            body = source[body_start:body_end]
 
-        if summoner_id:
-            self._emit_progress("Consultando clasificatorias...")
-            by_summoner = self._get(
-                f"https://{platform.lower()}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}",
-                context="Clasificatorias",
-            )
-            if isinstance(by_summoner, list):
-                league_entries = [entry for entry in by_summoner if isinstance(entry, dict)]
-
-        if league_entries:
-            return league_entries, ranked_available
-
-        self._emit_progress("Consultando clasificatorias por PUUID...")
-        by_puuid: dict | list | None = None
-        try:
-            by_puuid = self._get(
-                f"https://{platform.lower()}.api.riotgames.com/lol/league-exp/v4/entries/by-puuid/{puuid}",
-                context="Clasificatorias por PUUID",
-            )
-        except RiotApiError as exc:
-            if "acceso denegado" in str(exc).lower() or "forbidden" in str(exc).lower():
-                ranked_available = bool(league_entries)
+            raw_name = html.unescape(match.group("name")).strip()
+            if "#" in raw_name:
+                parsed_game_name, parsed_tag_line = [segment.strip() for segment in raw_name.split("#", 1)]
             else:
-                raise
-        if isinstance(by_puuid, list):
-            filtered = [entry for entry in by_puuid if isinstance(entry, dict)]
-            return filtered, ranked_available
+                parsed_game_name, parsed_tag_line = raw_name, ""
 
-        if legacy_summoner_name:
-            self._emit_progress("Resolviendo summonerId legacy...")
-            try:
-                by_name = self._get(
-                    f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-name/{quote(legacy_summoner_name)}",
-                    context="Resolucion legacy por summonerName",
-                )
-                legacy_summoner_id = None
-                if isinstance(by_name, dict):
-                    legacy_summoner_id = by_name.get("id") or by_name.get("summonerId")
-                if legacy_summoner_id:
-                    by_legacy_summoner = self._get(
-                        f"https://{platform.lower()}.api.riotgames.com/lol/league/v4/entries/by-summoner/{legacy_summoner_id}",
-                        context="Clasificatorias legacy por summonerName",
-                    )
-                    if isinstance(by_legacy_summoner, list):
-                        filtered = [entry for entry in by_legacy_summoner if isinstance(entry, dict)]
-                        return filtered, ranked_available
-            except RiotApiError:
-                pass
+            team_match = re.search(r'<div class="cardHeader\s+(blue|red)"', body, re.IGNORECASE)
+            team_color = team_match.group(1).lower() if team_match else "blue"
+            champion_match = re.search(r'<img[^>]+class="champion[^"]*"[^>]+alt="([^"]+)"', body, re.IGNORECASE)
+            champion_id_match = re.search(r'class="champion-(\d+)-', body, re.IGNORECASE)
+            role = self._extract_live_role_from_porofessor(body)
+            level_match = re.search(r"Summoner Level:\s*(\d+)", body, re.IGNORECASE)
+            mastery_match = re.search(r"Mastery Level\s+(\d+)", body, re.IGNORECASE)
 
-        return [], ranked_available
-
-    def _fallback_ranked_entries(
-        self,
-        platform: str,
-        puuid: str,
-        summoner_id: str | None,
-        game_name: str,
-        tag_line: str,
-        legacy_summoner_name: str | None = None,
-    ) -> tuple[list[dict], bool]:
-        league_entries, ranked_available = self._load_ranked_entries(
-            platform,
-            puuid,
-            summoner_id,
-            legacy_summoner_name=legacy_summoner_name,
-        )
-        if league_entries:
-            return league_entries, ranked_available
-
-        self._emit_progress("Intentando fallback de ranked con OP.GG...")
-        try:
-            opgg_entries = self._load_ranked_from_opgg(platform, game_name, tag_line)
-        except RiotApiError:
-            return league_entries, ranked_available
-        if opgg_entries:
-            return opgg_entries, True
-
-        return [], ranked_available
-
-    def _extract_legacy_summoner_name(self, regional: str, puuid: str, match_ids: list[str]) -> str | None:
-        for match_id in match_ids[:5]:
-            try:
-                match = self._get(
-                    f"https://{regional}.api.riotgames.com/lol/match/v5/matches/{match_id}",
-                    context=f"Legacy summonerName en partida {match_id}",
-                )
-            except RiotApiError:
-                continue
-
-            if not isinstance(match, dict):
-                continue
-            info = match.get("info")
-            if not isinstance(info, dict):
-                continue
-            participants = info.get("participants")
-            if not isinstance(participants, list):
-                continue
-
-            for item in participants:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("puuid") != puuid:
-                    continue
-                summoner_name = item.get("summonerName")
-                if isinstance(summoner_name, str) and summoner_name.strip():
-                    return summoner_name.strip()
-        return None
-
-    def _resolve_summoner_id(
-        self,
-        platform: str,
-        regional: str,
-        puuid: str,
-        summoner: dict,
-        game_name: str,
-        tag_line: str,
-    ) -> str | None:
-        summoner_id = summoner.get("id") or summoner.get("summonerId")
-        if isinstance(summoner_id, str) and summoner_id.strip():
-            return summoner_id.strip()
-
-        try:
-            match_ids = self._get(
-                f"https://{regional}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids",
-                context="Historial de partidas",
-                start=0,
-                count=5,
+            title_match = re.search(
+                r'<div class="title oneLiner">\s*(\d+(?:\.\d+)?)%\s*Win.*?<span class="subtitle">\((\d+)\s*Played\)</span>',
+                body,
+                re.IGNORECASE | re.DOTALL,
             )
-        except RiotApiError:
-            match_ids = []
+            recent_winrate = float(title_match.group(1)) if title_match else None
+            recent_games = int(title_match.group(2)) if title_match else None
 
-        legacy_summoner_name = None
-        if isinstance(match_ids, list) and match_ids:
-            legacy_summoner_name = self._extract_legacy_summoner_name(regional, puuid, match_ids)
-
-        if legacy_summoner_name:
-            try:
-                by_name = self._get(
-                    f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-name/{quote(legacy_summoner_name)}",
-                    context="Resolucion de summonerId legacy",
-                )
-                resolved_id = by_name.get("id") or by_name.get("summonerId")
-                if isinstance(resolved_id, str) and resolved_id.strip():
-                    return resolved_id.strip()
-            except RiotApiError:
-                pass
-
-        try:
-            by_name = self._get(
-                f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-name/{quote(game_name)}",
-                context="Resolucion de summonerId por nombre legacy",
+            kda_match = re.search(
+                r'<span class="kills">([\d.]+)</span>\s*/\s*<span class="deaths">([\d.]+)</span>\s*/\s*<span class="assists">([\d.]+)</span>',
+                body,
+                re.IGNORECASE | re.DOTALL,
             )
-            resolved_id = by_name.get("id") or by_name.get("summonerId")
-            if isinstance(resolved_id, str) and resolved_id.strip():
-                return resolved_id.strip()
-        except RiotApiError:
-            pass
+            avg_kda = ""
+            if kda_match:
+                avg_kda = f"{kda_match.group(1)} / {kda_match.group(2)} / {kda_match.group(3)}"
 
-        return None
+            champion_rank_match = re.search(r"Rank:\s*<a[^>]*>\s*(#[\d,]+)\s*</a>", body, re.IGNORECASE | re.DOTALL)
+            spell_names = [
+                self._clean_html_text(spell_name)
+                for spell_name in re.findall(
+                    r'<img[^>]+alt="([^"]+)"[^>]+class="[^"]*\bspell-\d+-16\b[^"]*"',
+                    body,
+                    re.IGNORECASE,
+                )
+            ]
+            spell_ids = [
+                int(spell_id)
+                for spell_id in re.findall(
+                    r'class="[^"]*\bspell-(\d+)-16\b[^"]*"',
+                    body,
+                    re.IGNORECASE,
+                )
+            ]
+            tag_titles = [
+                self._clean_html_text(tag_title)
+                for tag_title in re.findall(
+                    r"<itemname class='tagTitle [^']+'>([^<]+)</itemname>",
+                    body,
+                    re.IGNORECASE,
+                )
+            ]
 
-    def _parse_ranked_entries(self, league_entries: list[dict]) -> tuple[RankedEntry | None, RankedEntry | None, float | None, float | None]:
+            participants.append(
+                LiveGamePlayerDetails(
+                    game_name=parsed_game_name,
+                    tag_line=parsed_tag_line,
+                    team_color=team_color,
+                    champion=self._clean_html_text(champion_match.group(1)) if champion_match else "Campeon desconocido",
+                    champion_id=int(champion_id_match.group(1)) if champion_id_match else 0,
+                    role=role,
+                    summoner_level=int(level_match.group(1)) if level_match else 0,
+                    recent_winrate=recent_winrate,
+                    recent_games=recent_games,
+                    avg_kda=avg_kda,
+                    champion_rank=champion_rank_match.group(1) if champion_rank_match else None,
+                    mastery_level=int(mastery_match.group(1)) if mastery_match else None,
+                    spell_ids=spell_ids[:2],
+                    spell_names=spell_names[:2],
+                    tags=tag_titles[:5],
+                )
+            )
+        return participants
+
+    def _load_ranked_entries(self, platform: str, game_name: str, tag_line: str) -> tuple[list[dict], bool]:
+        entries = self._load_ranked_from_opgg(platform, game_name, tag_line)
+        if entries:
+            return entries, True
+
+        entries = self._load_leagueofgraphs_ranked(platform, game_name, tag_line)
+        if entries:
+            return entries, True
+
+        return [], False
+
+    def _parse_ranked_entries(
+        self,
+        league_entries: list[dict],
+    ) -> tuple[RankedEntry | None, RankedEntry | None, float | None, float | None]:
         soloq = None
         flex = None
         soloq_winrate = None
@@ -769,20 +1296,18 @@ class RiotApiClient:
 
     def _build_summary(
         self,
-        account: dict,
-        summoner: dict,
+        profile: ExternalProfile,
         platform: str,
         league_entries: list[dict],
-        game_name: str,
-        tag_line: str,
         ranked_available: bool,
-        matches: list[MatchSummary],
         recent_winrate: float,
+        include_matches: bool,
     ) -> PlayerSummary:
         soloq, flex, soloq_winrate, flex_winrate = self._parse_ranked_entries(league_entries)
         estimated_mmr = estimate_mmr(soloq, recent_winrate)
         global_winrate = None
         ranked_games = soloq.total_games if soloq and soloq.total_games > 0 else None
+
         if soloq_winrate is not None:
             global_winrate = round(soloq_winrate, 1)
         elif soloq and soloq.total_games > 0:
@@ -791,41 +1316,48 @@ class RiotApiClient:
             global_winrate = round(flex_winrate, 1)
         elif flex and flex.total_games > 0:
             global_winrate = round(flex.winrate, 1)
-        elif soloq is not None:
-            try:
-                ugg_winrate = self._load_winrate_from_ugg(platform, game_name, tag_line)
-            except RiotApiError:
-                ugg_winrate = None
+        else:
+            ugg_winrate = self._load_winrate_from_ugg(platform, profile.game_name, profile.tag_line)
             if ugg_winrate is not None:
                 global_winrate = round(ugg_winrate, 1)
+
         if ranked_games is None:
+            ranked_games = self._load_games_from_opgg(platform, profile.game_name, profile.tag_line)
+        if ranked_games is None:
+            ranked_games = self._load_games_from_ugg(platform, profile.game_name, profile.tag_line)
+
+        matches = profile.matches if include_matches else []
+        most_played_champions: list[ChampionPlayStat] = []
+        most_played_roles: list[RolePlayStat] = []
+        if include_matches:
             try:
-                opgg_games = self._load_games_from_opgg(platform, game_name, tag_line)
+                most_played_champions, most_played_roles = self._load_ranked_preferences_from_leagueofgraphs(
+                    platform,
+                    profile.game_name,
+                    profile.tag_line,
+                )
             except RiotApiError:
-                opgg_games = None
-            if opgg_games is not None:
-                ranked_games = opgg_games
-            else:
-                try:
-                    ugg_games = self._load_games_from_ugg(platform, game_name, tag_line)
-                except RiotApiError:
-                    ugg_games = None
-                if ugg_games is not None:
-                    ranked_games = ugg_games
+                most_played_champions, most_played_roles = [], []
+
+            if not most_played_champions:
+                most_played_champions = self._fallback_most_played_champions(matches)
 
         return PlayerSummary(
-            game_name=account.get("gameName") or game_name,
-            tag_line=account.get("tagLine") or tag_line,
-            summoner_level=int(summoner.get("summonerLevel", 0)),
-            profile_icon_id=int(summoner.get("profileIconId", 0)),
+            game_name=profile.game_name,
+            tag_line=profile.tag_line,
+            summoner_level=profile.summoner_level,
+            profile_icon_id=profile.profile_icon_id,
             platform=platform,
+            opgg_url=self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line),
             soloq=soloq,
             flex=flex,
             estimated_mmr=estimated_mmr,
             global_winrate=global_winrate,
             ranked_games=ranked_games,
             recent_winrate=recent_winrate,
-            matches=matches,
+            matches=copy.deepcopy(matches),
+            most_played_champions=copy.deepcopy(most_played_champions),
+            most_played_roles=copy.deepcopy(most_played_roles),
             ranked_available=ranked_available,
         )
 
@@ -835,52 +1367,15 @@ class RiotApiClient:
         tag_line: str,
         platform: str,
     ) -> PlayerSummary:
-        regional = PLATFORM_TO_REGION[platform]
-        account = self._get(
-            f"https://{regional}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/"
-            f"{quote(game_name)}/{quote(tag_line)}",
-            context="Cuenta",
-        )
-
-        puuid = account.get("puuid")
-        if not puuid:
-            raise RiotApiError("La cuenta no devolvio un PUUID valido.")
-
-        summoner = self._get(
-            f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}",
-            context="Perfil de invocador",
-        )
-        summoner_id = summoner.get("id") or summoner.get("summonerId")
-        legacy_summoner_name = None
-        if not summoner_id:
-            match_ids = self._get(
-                f"https://{regional}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids",
-                context="Historial de partidas",
-                start=0,
-                count=5,
-            )
-            if isinstance(match_ids, list):
-                legacy_summoner_name = self._extract_legacy_summoner_name(regional, puuid, match_ids)
-        league_entries, ranked_available = self._fallback_ranked_entries(
-            platform,
-            puuid,
-            summoner_id,
-            game_name,
-            tag_line,
-            legacy_summoner_name=legacy_summoner_name,
-        )
-
-        # Use global winrate when available; otherwise neutral recent form for overview/MMR.
+        profile = self._load_profile_from_leagueofgraphs(platform, game_name, tag_line)
+        league_entries, ranked_available = self._load_ranked_entries(platform, profile.game_name, profile.tag_line)
         return self._build_summary(
-            account=account,
-            summoner=summoner,
+            profile=profile,
             platform=platform,
             league_entries=league_entries,
-            game_name=game_name,
-            tag_line=tag_line,
             ranked_available=ranked_available,
-            matches=[],
             recent_winrate=50.0,
+            include_matches=False,
         )
 
     def fetch_player_summary(
@@ -889,98 +1384,26 @@ class RiotApiClient:
         tag_line: str,
         platform: str,
     ) -> PlayerSummary:
-        regional = PLATFORM_TO_REGION[platform]
-        self._emit_progress("Buscando cuenta de Riot...")
-        account = self._get(
-            f"https://{regional}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/"
-            f"{quote(game_name)}/{quote(tag_line)}",
-            context="Cuenta",
-        )
+        self._emit_progress("Cargando perfil externo...")
+        profile = self._load_profile_from_leagueofgraphs(platform, game_name, tag_line)
+        self._emit_progress("Cargando ranked desde fuentes externas...")
+        league_entries, ranked_available = self._load_ranked_entries(platform, profile.game_name, profile.tag_line)
 
-        puuid = account.get("puuid")
-        if not puuid:
-            raise RiotApiError("La cuenta no devolvio un PUUID valido.")
+        match_count = len(profile.matches)
+        if match_count:
+            self._emit_progress(f"Procesadas {match_count} partidas recientes.")
+        else:
+            self._emit_progress("No se encontraron partidas recientes en la fuente externa.")
 
-        self._emit_progress("Cargando perfil del invocador...")
-        summoner = self._get(
-            f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}",
-            context="Perfil de invocador",
-        )
-        summoner_id = summoner.get("id") or summoner.get("summonerId")
-        self._emit_progress("Cargando las 20 partidas mas recientes...")
-        matches = self._get(
-            f"https://{regional}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids",
-            context="Historial de partidas",
-            start=0,
-            count=MATCH_PAGE_SIZE,
-        )
-        if not isinstance(matches, list):
-            raise RiotApiError("Historial de partidas: respuesta invalida de Riot API.")
-        matches = matches[:MAX_RECENT_MATCHES]
-        legacy_summoner_name = None
-        if not summoner_id:
-            legacy_summoner_name = self._extract_legacy_summoner_name(regional, puuid, matches)
-        league_entries, ranked_available = self._fallback_ranked_entries(
-            platform,
-            puuid,
-            summoner_id,
-            game_name,
-            tag_line,
-            legacy_summoner_name=legacy_summoner_name,
-        )
-
-        match_summaries = []
-        wins = 0
-        total_matches = len(matches)
-        for index, match_id in enumerate(matches, start=1):
-            self._emit_progress(f"Analizando partida {index}/{total_matches}...")
-            match = self._get(
-                f"https://{regional}.api.riotgames.com/lol/match/v5/matches/{match_id}",
-                context=f"Detalle de partida {match_id}",
-            )
-            info = match["info"]
-            participant = next(
-                item for item in info["participants"] if item["puuid"] == puuid
-            )
-            won = bool(participant["win"])
-            if won:
-                wins += 1
-
-            kills = int(participant["kills"])
-            deaths = int(participant["deaths"])
-            assists = int(participant["assists"])
-            kda = round((kills + assists) / max(1, deaths), 2)
-
-            match_summaries.append(
-                MatchSummary(
-                    match_id=match_id,
-                    champion=participant["championName"],
-                    champion_id=int(participant.get("championId", 0)),
-                    role=self._normalize_role(participant),
-                    queue_name=QUEUE_NAMES.get(info["queueId"], f"Queue {info['queueId']}"),
-                    won=won,
-                    kills=kills,
-                    deaths=deaths,
-                    assists=assists,
-                    cs=int(participant["totalMinionsKilled"] + participant.get("neutralMinionsKilled", 0)),
-                    duration_min=max(1, int(info["gameDuration"] // 60)),
-                    damage=int(participant["totalDamageDealtToChampions"]),
-                    gold=int(participant["goldEarned"]),
-                    kda=kda,
-                )
-            )
-
-        recent_winrate = round((wins / max(1, len(match_summaries))) * 100, 1)
+        wins = sum(1 for match in profile.matches if match.won)
+        recent_winrate = round((wins / max(1, len(profile.matches))) * 100, 1) if profile.matches else 0.0
         return self._build_summary(
-            account=account,
-            summoner=summoner,
+            profile=profile,
             platform=platform,
             league_entries=league_entries,
-            game_name=game_name,
-            tag_line=tag_line,
             ranked_available=ranked_available,
-            matches=match_summaries,
             recent_winrate=recent_winrate,
+            include_matches=True,
         )
 
     def fetch_live_game_summary(
@@ -988,128 +1411,56 @@ class RiotApiClient:
         game_name: str,
         tag_line: str,
         platform: str,
+        fast_mode: bool = False,
     ) -> LiveGameParticipantSummary:
-        regional = PLATFORM_TO_REGION[platform]
-        account = self._get(
-            f"https://{regional}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/"
-            f"{quote(game_name)}/{quote(tag_line)}",
-            context="Cuenta",
-        )
-
-        puuid = account.get("puuid")
-        if not puuid:
-            raise RiotApiError("La cuenta no devolvio un PUUID valido.")
-
-        summoner = self._get(
-            f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}",
-            context="Perfil de invocador",
-        )
-        summoner_id = self._resolve_summoner_id(
+        del fast_mode
+        profile = self._load_profile_from_leagueofgraphs(platform, game_name, tag_line)
+        spectator = None
+        try:
+            spectator = self._load_spectator_session(platform, profile.game_name, profile.tag_line)
+        except RiotApiError:
+            spectator = None
+        fallback = self._load_live_game_from_porofessor(
             platform=platform,
-            regional=regional,
-            puuid=puuid,
-            summoner=summoner,
-            game_name=game_name,
-            tag_line=tag_line,
+            game_name=profile.game_name,
+            tag_line=profile.tag_line,
         )
-        if not summoner_id:
-            fallback = self._load_live_game_from_porofessor(
-                platform=platform,
-                game_name=account.get("gameName") or game_name,
-                tag_line=account.get("tagLine") or tag_line,
-            )
-            if fallback is not None:
-                return fallback
+        if fallback is not None:
+            fallback.spectate_url = f"{self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line)}/ingame"
+            fallback.spectator = spectator
+            return fallback
+
+        if spectator is not None:
             return LiveGameParticipantSummary(
-                game_name=account.get("gameName") or game_name,
-                tag_line=account.get("tagLine") or tag_line,
+                game_name=profile.game_name,
+                tag_line=profile.tag_line,
                 platform=platform,
-                in_game=False,
-                status_text="No se pudo resolver spectator ni consultar una fuente externa",
+                in_game=True,
+                champion="N/D",
+                champion_id=0,
+                role="UNKNOWN",
+                game=LiveGameSummary(
+                    queue_name="Partida activa",
+                    game_mode="Partida activa",
+                    map_name="Summoner's Rift",
+                    duration_min=0,
+                    team_size=0,
+                    enemy_team_size=0,
+                ),
+                status_text="Partida activa detectada por Riot API",
+                spectate_url=f"{self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line)}/ingame",
+                spectator=spectator,
             )
-
-        active_game = self._get_or_none_on_404(
-            f"https://{platform.lower()}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{summoner_id}",
-            context="Partida activa",
-        )
-        if not isinstance(active_game, dict):
-            return LiveGameParticipantSummary(
-                game_name=account.get("gameName") or game_name,
-                tag_line=account.get("tagLine") or tag_line,
-                platform=platform,
-                in_game=False,
-                status_text="Fuera de partida",
-            )
-
-        participants = active_game.get("participants")
-        if not isinstance(participants, list):
-            raise RiotApiError("Partida activa: respuesta invalida de Riot API.")
-
-        participant = next(
-            (
-                item for item in participants
-                if isinstance(item, dict) and (
-                    item.get("puuid") == puuid or item.get("summonerId") == summoner_id
-                )
-            ),
-            None,
-        )
-        if participant is None:
-            raise RiotApiError("Partida activa: no se encontro al jugador dentro de la respuesta.")
-
-        team_id = int(participant.get("teamId", 0))
-        team_size = sum(
-            1 for item in participants if isinstance(item, dict) and int(item.get("teamId", 0)) == team_id
-        )
-        enemy_team_size = sum(
-            1 for item in participants if isinstance(item, dict) and int(item.get("teamId", 0)) != team_id
-        )
-        game_length_seconds = int(active_game.get("gameLength", 0) or 0)
-        game = LiveGameSummary(
-            queue_name=QUEUE_NAMES.get(
-                int(active_game.get("gameQueueConfigId", 0)),
-                f"Queue {int(active_game.get('gameQueueConfigId', 0))}",
-            ),
-            game_mode=str(active_game.get("gameMode") or active_game.get("gameType") or "Desconocido"),
-            map_name=MAP_NAMES.get(int(active_game.get("mapId", 0)), f"Mapa {int(active_game.get('mapId', 0))}"),
-            duration_min=max(1, game_length_seconds // 60) if game_length_seconds > 0 else 0,
-            team_size=team_size,
-            enemy_team_size=enemy_team_size,
-        )
-        role = self._normalize_role(participant)
-        status_parts = [
-            game.queue_name,
-            f"{game.duration_min} min" if game.duration_min > 0 else "Duracion N/D",
-            game.map_name,
-        ]
 
         return LiveGameParticipantSummary(
-            game_name=account.get("gameName") or game_name,
-            tag_line=account.get("tagLine") or tag_line,
+            game_name=profile.game_name,
+            tag_line=profile.tag_line,
             platform=platform,
-            in_game=True,
-            champion=str(participant.get("championName") or "Campeon desconocido"),
-            champion_id=int(participant.get("championId", 0)),
-            role=role,
-            game=game,
-            status_text=" - ".join(status_parts),
+            in_game=False,
+            status_text="No se pudo confirmar la partida con las fuentes externas",
+            spectate_url=f"{self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line)}/ingame",
+            spectator=spectator,
         )
-
-
-TIER_BASE = {
-    "IRON": 800,
-    "BRONZE": 950,
-    "SILVER": 1100,
-    "GOLD": 1275,
-    "PLATINUM": 1450,
-    "EMERALD": 1600,
-    "DIAMOND": 1800,
-    "MASTER": 2050,
-    "GRANDMASTER": 2200,
-    "CHALLENGER": 2350,
-}
-
-RANK_OFFSET = {"IV": 0, "III": 65, "II": 130, "I": 195}
 
 
 def estimate_mmr(entry: RankedEntry | None, recent_winrate: float) -> int | None:

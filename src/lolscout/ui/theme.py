@@ -28,12 +28,13 @@ QFrame#HeaderCard {
 }
 QLineEdit, QComboBox, QSpinBox {
     background: #0b1528;
-    border: 1px solid #29436b;
+    border: none;
     border-radius: 12px;
     padding: 10px 12px;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
-    border: 1px solid #54d2a0;
+    border: none;
+    background: #10203a;
 }
 QPushButton {
     background: #54d2a0;
