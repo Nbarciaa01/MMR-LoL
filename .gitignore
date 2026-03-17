@@ -6,7 +6,10 @@ dist/
 *.spec
 *.log
 .env
+.vscode/
+.lolscout_cache/
 discord_avatars/
 opgg_*.html
 ugg_*.html
 log_*.html
+lolalytics_*.html

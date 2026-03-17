@@ -78,6 +78,9 @@ class PlayerSummary:
     most_played_champions: list[ChampionPlayStat] = field(default_factory=list)
     most_played_roles: list[RolePlayStat] = field(default_factory=list)
     ranked_available: bool = True
+    top_mastery_champion_id: int = 0
+    top_mastery_level: int | None = None
+    top_mastery_points: int | None = None
 
 
 @dataclass
@@ -128,9 +131,86 @@ class LiveGameParticipantSummary:
     in_game: bool
     champion: str | None = None
     champion_id: int = 0
+    mastery_level: int | None = None
     role: str = "UNKNOWN"
     game: LiveGameSummary | None = None
     status_text: str = ""
     spectate_url: str | None = None
     spectator: SpectatorSession | None = None
     participants: list[LiveGamePlayerDetails] = field(default_factory=list)
+
+
+@dataclass
+class LolalyticsChampion:
+    slug: str
+    name: str
+    icon_url: str | None = None
+
+
+@dataclass
+class LolalyticsAsset:
+    name: str
+    icon_url: str | None = None
+    label: str | None = None
+
+
+@dataclass
+class LolalyticsBuildSection:
+    title: str
+    items: list[LolalyticsAsset] = field(default_factory=list)
+    win_rate: float | None = None
+    games: int | None = None
+
+
+@dataclass
+class LolalyticsSkillOrderRow:
+    skill: LolalyticsAsset
+    levels: list[int] = field(default_factory=list)
+
+
+@dataclass
+class LolalyticsMatchup:
+    slug: str
+    champion: str
+    win_rate: float
+    delta_1: float
+    delta_2: float
+    games: int
+
+
+@dataclass
+class LolalyticsBuildDetail:
+    slug: str
+    champion: str
+    role: str
+    patch: str | None = None
+    icon_url: str | None = None
+    summary: str = ""
+    tier: str | None = None
+    rank_label: str | None = None
+    win_rate: float | None = None
+    win_rate_delta: float | None = None
+    game_avg_win_rate: float | None = None
+    pick_rate: float | None = None
+    ban_rate: float | None = None
+    games: int | None = None
+    best_player_win_rate: float | None = None
+    best_player_rank: str | None = None
+    strong_against: list[str] = field(default_factory=list)
+    weak_against: list[str] = field(default_factory=list)
+    skill_priority: list[LolalyticsAsset] = field(default_factory=list)
+    skill_order: list[LolalyticsSkillOrderRow] = field(default_factory=list)
+    skill_order_win_rate: float | None = None
+    skill_order_games: int | None = None
+    summoner_spells: list[LolalyticsAsset] = field(default_factory=list)
+    primary_runes: list[LolalyticsAsset] = field(default_factory=list)
+    secondary_runes: list[LolalyticsAsset] = field(default_factory=list)
+    starting_items: LolalyticsBuildSection | None = None
+    core_build: LolalyticsBuildSection | None = None
+    item_four: list[LolalyticsBuildSection] = field(default_factory=list)
+    item_five: list[LolalyticsBuildSection] = field(default_factory=list)
+    item_six: list[LolalyticsBuildSection] = field(default_factory=list)
+    best_matchups: list[LolalyticsMatchup] = field(default_factory=list)
+    worst_matchups: list[LolalyticsMatchup] = field(default_factory=list)
+    build_url: str | None = None
+    counters_url: str | None = None

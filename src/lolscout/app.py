@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 
 
@@ -43,14 +44,59 @@ def _load_dotenv() -> None:
         break
 
 
+def _set_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LoLScout.MMRLoL")
+    except Exception:
+        return
+
+
+def _load_app_icon() -> QIcon:
+    project_root = Path(__file__).resolve().parents[2]
+    bundle_root = Path(getattr(sys, "_MEIPASS", project_root))
+    candidate_paths = (
+        bundle_root / "src" / "lolscout" / "ui" / "img" / "mmr-logo-app.png",
+        bundle_root / "src" / "lolscout" / "ui" / "img" / "mmr-logo.png",
+        bundle_root / "ui" / "img" / "mmr-logo-app.png",
+        bundle_root / "ui" / "img" / "mmr-logo.png",
+        project_root / "src" / "lolscout" / "ui" / "img" / "mmr-logo-app.png",
+        project_root / "src" / "lolscout" / "ui" / "img" / "mmr-logo.png",
+        Path.cwd() / "src" / "lolscout" / "ui" / "img" / "mmr-logo-app.png",
+        Path.cwd() / "src" / "lolscout" / "ui" / "img" / "mmr-logo.png",
+        bundle_root / "src" / "lolscout" / "ui" / "img" / "mmr-logo.ico",
+        bundle_root / "ui" / "img" / "mmr-logo.ico",
+        project_root / "src" / "lolscout" / "ui" / "img" / "mmr-logo.ico",
+        Path.cwd() / "src" / "lolscout" / "ui" / "img" / "mmr-logo.ico",
+    )
+    for icon_path in candidate_paths:
+        if icon_path.exists():
+            pixmap = QPixmap()
+            if pixmap.load(str(icon_path)):
+                icon = QIcon()
+                icon.addPixmap(pixmap)
+                return icon
+    return QIcon()
+
+
 def main() -> int:
     _load_dotenv()
+    _set_windows_app_id()
 
     from .ui.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName("LoL Scout")
     app.setOrganizationName("LoLScout")
+    app_icon = _load_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     window = MainWindow()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
     return app.exec()

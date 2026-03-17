@@ -56,6 +56,8 @@ Para que ese build funcione, en el PC donde compilas si necesitas tener `.env`.
 
 La configuracion incluye un campo de API Key por compatibilidad con versiones anteriores, pero la app ya no depende de Riot API.
 
+El apartado de ranking usa una ruta rapida sin Riot API y cache local en `.lolscout_cache` durante 5 minutos para minimizar tiempos de carga en refrescos repetidos.
+
 ## Crear .exe para Windows
 
 ```powershell
