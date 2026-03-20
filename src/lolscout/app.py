@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QApplication
+if TYPE_CHECKING:
+    from PySide6.QtGui import QIcon
 
 
 def _load_dotenv() -> None:
@@ -57,6 +58,8 @@ def _set_windows_app_id() -> None:
 
 
 def _load_app_icon() -> QIcon:
+    from PySide6.QtGui import QIcon, QPixmap
+
     project_root = Path(__file__).resolve().parents[2]
     bundle_root = Path(getattr(sys, "_MEIPASS", project_root))
     candidate_paths = (
@@ -87,7 +90,10 @@ def main() -> int:
     _load_dotenv()
     _set_windows_app_id()
 
+    # Keep Qt imports after the window module so requests/urllib3 do not import
+    # under PySide's feature hook during startup.
     from .ui.main_window import MainWindow
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
     app.setApplicationName("LoL Scout")

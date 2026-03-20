@@ -45,6 +45,8 @@ class MatchSummary:
     damage: int
     gold: int
     kda: float
+    played_at_iso: str | None = None
+    played_at_text: str = ""
 
 
 @dataclass
@@ -81,6 +83,42 @@ class PlayerSummary:
     top_mastery_champion_id: int = 0
     top_mastery_level: int | None = None
     top_mastery_points: int | None = None
+
+
+@dataclass
+class TodayLpSummary:
+    player: PlayerSummary
+    lp_change: int | None = None
+    current_lp_score: int | None = None
+    baseline_lp_score: int | None = None
+    current_rank_text: str = ""
+    baseline_rank_text: str = ""
+    baseline_local_time: str | None = None
+    baseline_source: str = ""
+    baseline_note: str = ""
+    today_matches: list[MatchSummary] = field(default_factory=list)
+
+    @property
+    def riot_id(self) -> str:
+        if self.player.tag_line:
+            return f"{self.player.game_name}#{self.player.tag_line}"
+        return self.player.game_name
+
+    @property
+    def change_text(self) -> str:
+        if self.lp_change is None:
+            return "--"
+        if self.lp_change > 0:
+            return f"+{self.lp_change} LP"
+        return f"{self.lp_change} LP"
+
+    @property
+    def is_positive(self) -> bool:
+        return self.lp_change is not None and self.lp_change > 0
+
+    @property
+    def is_negative(self) -> bool:
+        return self.lp_change is not None and self.lp_change < 0
 
 
 @dataclass

@@ -250,44 +250,448 @@ QLabel#InlineNotice {
     color: #c7cfdb;
     padding: 11px 13px;
 }
-QFrame#RankingHeroCard {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171c25, stop:0.56 #11161f, stop:1 #0d1219);
+QFrame#LiveHeroCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171c25, stop:0.52 #11161f, stop:1 #0d1219);
     border: 1px solid #313847;
-    border-radius: 28px;
+    border-radius: 24px;
 }
-QLabel#RankingHeroTitle {
+QLabel#LiveHeroEyebrow {
+    color: #c9a46b;
+    font-family: "Bahnschrift";
+    font-size: 8.9pt;
+    font-weight: 700;
+    letter-spacing: 2.2px;
+    text-transform: uppercase;
+}
+QLabel#LiveHeroTitle {
     color: #f6f1e8;
     font-family: "Bahnschrift";
-    font-size: 22pt;
+    font-size: 17.5pt;
     font-weight: 700;
     letter-spacing: 0.3px;
 }
-QLabel#RankingHeroLead {
+QLabel#LiveHeroLead {
     color: #d9c7a4;
-    font-size: 10.8pt;
+    font-size: 9.4pt;
     font-weight: 600;
 }
-QLabel#RankingStatusNotice {
+QLabel#LiveStatusNotice {
     background: rgba(10, 14, 19, 148);
     border: 1px solid rgba(53, 62, 76, 210);
-    border-radius: 16px;
+    border-radius: 14px;
     color: #c6cfdb;
-    padding: 12px 14px;
+    padding: 9px 12px;
 }
-QFrame#RankingOverviewCard {
+QFrame#LiveOverviewCard {
+    background: rgba(9, 13, 18, 164);
+    border: 1px solid rgba(72, 81, 98, 205);
+    border-radius: 16px;
+    min-width: 120px;
+}
+QLabel#LiveOverviewValue {
+    font-family: "Bahnschrift";
+    font-size: 13.2pt;
+    font-weight: 700;
+}
+QLabel#LiveOverviewLabel {
+    color: #8f99ab;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+QFrame#LiveMatchCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #151a23, stop:0.52 #11161f, stop:1 #0f131b);
+    border: 1px solid #2d3441;
+    border-radius: 26px;
+}
+QFrame#LiveMatchIconShell {
+    background: qradialgradient(cx:0.42, cy:0.38, radius:0.9, stop:0 rgba(35, 43, 58, 240), stop:0.72 rgba(18, 23, 33, 220), stop:1 rgba(10, 13, 18, 210));
+    border: 1px solid rgba(201, 164, 107, 118);
+    border-radius: 22px;
+}
+QLabel#LiveMatchEyebrow {
+    color: #c9a46b;
+    font-family: "Bahnschrift";
+    font-size: 8.6pt;
+    font-weight: 700;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+}
+QLabel#LiveMatchTitle {
+    color: #f6f1e8;
+    font-family: "Bahnschrift";
+    font-size: 18pt;
+    font-weight: 700;
+}
+QLabel#LiveMatchDetail {
+    color: #c2cfdf;
+    font-size: 9.8pt;
+}
+QFrame#LiveMetaChip {
+    background: rgba(8, 12, 18, 168);
+    border: 1px solid rgba(55, 64, 78, 195);
+    border-radius: 16px;
+    min-width: 128px;
+}
+QLabel#LiveMetaValue {
+    font-family: "Bahnschrift";
+    font-size: 12.2pt;
+    font-weight: 700;
+}
+QLabel#LiveMetaLabel {
+    color: #8f99ab;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+QPushButton#LiveDetailsButton {
+    background: rgba(10, 14, 20, 178);
+    color: #ecd7b1;
+    border: 1px solid rgba(112, 89, 55, 210);
+    border-radius: 15px;
+    padding: 11px 16px;
+    text-align: left;
+    font-family: "Bahnschrift";
+    font-weight: 700;
+}
+QPushButton#LiveDetailsButton:hover {
+    background: rgba(17, 21, 28, 210);
+    border-color: #c39a5b;
+}
+QPushButton#LiveDetailsButton:pressed {
+    background: rgba(10, 13, 18, 235);
+}
+QPushButton#LiveDetailsButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #d5b47d, stop:1 #ba8e4e);
+    border-color: #c9a46b;
+    color: #17120b;
+}
+QFrame#LiveTeamCard {
+    background: rgba(9, 13, 18, 154);
+    border: 1px solid rgba(52, 60, 73, 205);
+    border-radius: 22px;
+}
+QLabel#LiveTeamTitle {
+    font-family: "Bahnschrift";
+    font-size: 13pt;
+    font-weight: 700;
+}
+QLabel#LiveTeamMeta {
+    color: #93a1b6;
+    font-size: 9pt;
+}
+QFrame#LivePlayerCard {
+    background: rgba(11, 15, 22, 170);
+    border: 1px solid rgba(52, 60, 73, 188);
+    border-radius: 18px;
+}
+QFrame#LivePlayerPlaceholderCard {
+    background: rgba(8, 12, 18, 132);
+    border: 1px solid rgba(63, 72, 86, 140);
+    border-radius: 18px;
+}
+QFrame#LivePlayerIconShell {
+    background: qradialgradient(cx:0.45, cy:0.38, radius:0.92, stop:0 rgba(24, 31, 43, 238), stop:1 rgba(10, 13, 18, 220));
+    border: 1px solid rgba(67, 74, 87, 205);
+    border-radius: 16px;
+}
+QLabel#LivePlayerName {
+    color: #f3ede1;
+    font-size: 11.2pt;
+    font-weight: 700;
+}
+QLabel#LivePlayerMeta {
+    color: #8fa0b7;
+    font-size: 9pt;
+}
+QLabel#LivePlayerPrimary {
+    color: #e5edf7;
+    font-size: 9.4pt;
+    font-weight: 700;
+}
+QLabel#LivePlayerTag {
+    color: #93a8c6;
+    background: rgba(11, 21, 40, 0.75);
+    border: 1px solid #22304d;
+    border-radius: 10px;
+    padding: 6px 8px;
+}
+QLabel#LivePlaceholderGlyph {
+    color: #c9a46b;
+    font-family: "Bahnschrift";
+    font-size: 10pt;
+    font-weight: 700;
+    background: transparent;
+}
+QFrame#PlayersHeroCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #181d26, stop:0.5 #121720, stop:1 #0d1218);
+    border: 1px solid #313847;
+    border-radius: 24px;
+}
+QLabel#PlayersHeroEyebrow {
+    color: #c9a46b;
+    font-family: "Bahnschrift";
+    font-size: 8.9pt;
+    font-weight: 700;
+    letter-spacing: 2.2px;
+    text-transform: uppercase;
+}
+QLabel#PlayersHeroTitle {
+    color: #f6f1e8;
+    font-family: "Bahnschrift";
+    font-size: 17.5pt;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QLabel#PlayersHeroLead {
+    color: #d9c7a4;
+    font-size: 9.4pt;
+    font-weight: 600;
+}
+QLabel#PlayersStatusNotice {
+    background: rgba(10, 14, 19, 148);
+    border: 1px solid rgba(53, 62, 76, 210);
+    border-radius: 14px;
+    color: #c6cfdb;
+    padding: 9px 12px;
+}
+QFrame#PlayersOverviewCard {
     background: rgba(9, 13, 18, 164);
     border: 1px solid rgba(72, 81, 98, 205);
     border-radius: 18px;
     min-width: 138px;
 }
-QLabel#RankingOverviewValue {
+QLabel#PlayersOverviewValue {
     font-family: "Bahnschrift";
     font-size: 15pt;
     font-weight: 700;
 }
-QLabel#RankingOverviewLabel {
+QLabel#PlayersOverviewLabel {
     color: #8f99ab;
     font-size: 8.4pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+QFrame#PlayerShowcaseCard {
+    background: transparent;
+    border: none;
+}
+QFrame#BuildsHeroCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #181e29, stop:0.52 #121822, stop:1 #0d1219);
+    border: 1px solid #313847;
+    border-radius: 24px;
+}
+QLabel#BuildsHeroEyebrow {
+    color: #c9a46b;
+    font-family: "Bahnschrift";
+    font-size: 8.9pt;
+    font-weight: 700;
+    letter-spacing: 2.2px;
+    text-transform: uppercase;
+}
+QLabel#BuildsHeroTitle {
+    color: #f6f1e8;
+    font-family: "Bahnschrift";
+    font-size: 17.5pt;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QLabel#BuildsHeroLead {
+    color: #d9c7a4;
+    font-size: 9.4pt;
+    font-weight: 600;
+}
+QLabel#BuildsStatusNotice {
+    background: rgba(10, 14, 19, 148);
+    border: 1px solid rgba(53, 62, 76, 210);
+    border-radius: 14px;
+    color: #c6cfdb;
+    padding: 9px 12px;
+}
+QFrame#BuildsOverviewCard {
+    background: rgba(9, 13, 18, 164);
+    border: 1px solid rgba(72, 81, 98, 205);
+    border-radius: 16px;
+    min-width: 120px;
+}
+QLabel#BuildsOverviewValue {
+    font-family: "Bahnschrift";
+    font-size: 13.2pt;
+    font-weight: 700;
+}
+QLabel#BuildsOverviewLabel {
+    color: #8f99ab;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+QLineEdit#BuildsSearchInput {
+    background: rgba(10, 14, 20, 176);
+    border: 1px solid #2b3442;
+    border-radius: 16px;
+    padding: 12px 15px;
+    color: #f5efe5;
+}
+QLineEdit#BuildsSearchInput:focus {
+    background: #151b24;
+    border: 1px solid #d8b379;
+}
+QFrame#BuildSearchResultCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #151a23, stop:1 #10151d);
+    border: 1px solid #2d3441;
+    border-radius: 22px;
+}
+QFrame#BuildResultIconShell {
+    background: qradialgradient(cx:0.45, cy:0.38, radius:0.92, stop:0 rgba(24, 31, 43, 238), stop:1 rgba(10, 13, 18, 220));
+    border: 1px solid rgba(201, 164, 107, 118);
+    border-radius: 19px;
+}
+QLabel#BuildSearchResultName {
+    color: #f3ede1;
+    font-family: "Bahnschrift";
+    font-size: 12.2pt;
+    font-weight: 700;
+}
+QLabel#BuildSearchResultMeta {
+    color: #92a3bb;
+    font-size: 8.8pt;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+QPushButton#BuildInlineButton {
+    background: rgba(10, 14, 20, 178);
+    color: #ecd7b1;
+    border: 1px solid rgba(112, 89, 55, 210);
+    border-radius: 15px;
+    padding: 10px 15px;
+    min-width: 112px;
+}
+QPushButton#BuildInlineButton:hover {
+    background: rgba(17, 21, 28, 210);
+    border-color: #c39a5b;
+}
+QPushButton#BuildInlineButton:pressed {
+    background: rgba(10, 13, 18, 235);
+}
+QFrame#BuildDetailHeroCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171d27, stop:0.52 #111720, stop:1 #0e131a);
+    border: 1px solid #2f3744;
+    border-radius: 28px;
+}
+QFrame#BuildDetailIconShell {
+    background: qradialgradient(cx:0.42, cy:0.38, radius:0.9, stop:0 rgba(35, 43, 58, 240), stop:0.72 rgba(18, 23, 33, 220), stop:1 rgba(10, 13, 18, 210));
+    border: 1px solid rgba(201, 164, 107, 118);
+    border-radius: 24px;
+}
+QLabel#BuildDetailEyebrow {
+    color: #c9a46b;
+    font-family: "Bahnschrift";
+    font-size: 8.7pt;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}
+QLabel#BuildDetailTitle {
+    color: #f6f1e8;
+    font-family: "Bahnschrift";
+    font-size: 20pt;
+    font-weight: 700;
+}
+QLabel#BuildDetailMeta {
+    color: #d2c09f;
+    font-size: 9.4pt;
+    font-weight: 700;
+}
+QLabel#BuildDetailSummary {
+    color: #d8e0ea;
+    font-size: 10.2pt;
+}
+QFrame#BuildPanelCard {
+    background: rgba(9, 13, 18, 158);
+    border: 1px solid rgba(58, 67, 82, 205);
+    border-radius: 22px;
+}
+QLabel#BuildPanelTitle {
+    font-family: "Bahnschrift";
+    font-size: 12.2pt;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QFrame#BuildOptionCard {
+    background: rgba(10, 14, 20, 176);
+    border: 1px solid rgba(60, 70, 86, 188);
+    border-radius: 18px;
+}
+QLabel#BuildOptionStat {
+    color: #edf3fb;
+    font-size: 9.5pt;
+    font-weight: 700;
+}
+QLabel#BuildOptionMeta {
+    color: #93a3b8;
+    font-size: 8.6pt;
+}
+QFrame#BuildMatchupCard {
+    background: rgba(10, 14, 20, 176);
+    border: 1px solid rgba(56, 65, 78, 190);
+    border-radius: 16px;
+}
+QLabel#BuildMatchupName {
+    color: #eef2f8;
+    font-size: 10.5pt;
+    font-weight: 700;
+}
+QLabel#BuildMatchupMeta {
+    color: #8ea1bb;
+    font-size: 8.7pt;
+}
+QLabel#BuildMatchupStat {
+    font-family: "Bahnschrift";
+    font-size: 11.4pt;
+    font-weight: 700;
+}
+QFrame#RankingHeroCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171c25, stop:0.56 #11161f, stop:1 #0d1219);
+    border: 1px solid #313847;
+    border-radius: 24px;
+}
+QLabel#RankingHeroTitle {
+    color: #f6f1e8;
+    font-family: "Bahnschrift";
+    font-size: 17.5pt;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QLabel#RankingHeroLead {
+    color: #d9c7a4;
+    font-size: 9.4pt;
+    font-weight: 600;
+}
+QLabel#RankingStatusNotice {
+    background: rgba(10, 14, 19, 148);
+    border: 1px solid rgba(53, 62, 76, 210);
+    border-radius: 14px;
+    color: #c6cfdb;
+    padding: 9px 12px;
+}
+QFrame#RankingOverviewCard {
+    background: rgba(9, 13, 18, 164);
+    border: 1px solid rgba(72, 81, 98, 205);
+    border-radius: 16px;
+    min-width: 120px;
+}
+QLabel#RankingOverviewValue {
+    font-family: "Bahnschrift";
+    font-size: 13.2pt;
+    font-weight: 700;
+}
+QLabel#RankingOverviewLabel {
+    color: #8f99ab;
+    font-size: 8pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -383,6 +787,106 @@ QLabel#RankingChampionName {
 QLabel#RankingChampionGames {
     color: #8ea1bb;
     font-size: 8.1pt;
+}
+QFrame#TodayHeroCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171d27, stop:0.56 #111720, stop:1 #0d1219);
+    border: 1px solid #313847;
+    border-radius: 24px;
+}
+QLabel#TodayHeroTitle {
+    color: #f6f1e8;
+    font-family: "Bahnschrift";
+    font-size: 17.5pt;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QLabel#TodayHeroLead {
+    color: #d9c7a4;
+    font-size: 9.4pt;
+    font-weight: 600;
+}
+QLabel#TodayStatusNotice {
+    background: rgba(10, 14, 19, 148);
+    border: 1px solid rgba(53, 62, 76, 210);
+    border-radius: 14px;
+    color: #c6cfdb;
+    padding: 9px 12px;
+}
+QFrame#TodayOverviewCard {
+    background: rgba(9, 13, 18, 164);
+    border: 1px solid rgba(72, 81, 98, 205);
+    border-radius: 16px;
+    min-width: 120px;
+}
+QLabel#TodayOverviewValue {
+    font-family: "Bahnschrift";
+    font-size: 13.2pt;
+    font-weight: 700;
+}
+QLabel#TodayOverviewLabel {
+    color: #8f99ab;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+QFrame#TodayPlayerCard {
+    background: transparent;
+    border: none;
+}
+QFrame#TodayCardHeroPanel {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(16, 22, 32, 96), stop:1 rgba(9, 13, 18, 128));
+    border: 1px solid rgba(58, 73, 96, 88);
+    border-radius: 24px;
+}
+QFrame#TodayCardInfoPanel {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(8, 11, 16, 196), stop:1 rgba(13, 17, 24, 236));
+    border: 1px solid rgba(205, 171, 115, 92);
+    border-radius: 20px;
+}
+QLabel#TodayHeroRankHint {
+    background: transparent;
+    border: none;
+}
+QLabel#TodayCardName {
+    color: #f7f0e2;
+    font-family: "Bahnschrift";
+    font-size: 13.2pt;
+    font-weight: 700;
+}
+QLabel#TodayCardCurrent {
+    color: #d7e5f5;
+    font-size: 9pt;
+    font-weight: 600;
+}
+QLabel#TodayMatchesTitle {
+    color: #c9a46b;
+    font-size: 8.3pt;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+}
+QFrame#TodayMatchRow {
+    background: rgba(9, 13, 18, 150);
+    border: 1px solid rgba(57, 66, 80, 188);
+    border-radius: 14px;
+}
+QLabel#TodayMatchChampion {
+    color: #eef2f8;
+    font-size: 9.3pt;
+    font-weight: 700;
+}
+QLabel#TodayMatchMeta {
+    color: #90a1b8;
+    font-size: 8.2pt;
+}
+QLabel#TodayCardBaseline {
+    color: #d7e1ee;
+    font-size: 8.9pt;
+}
+QLabel#TodayCardMeta {
+    color: #90a1b8;
+    font-size: 8.4pt;
 }
 QFrame#HomeHeroCard {
     background: transparent;

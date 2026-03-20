@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 import html
 import json
 import math
@@ -16,7 +17,7 @@ import requests
 
 from PySide6.QtCore import QUrl
 from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -51,6 +52,7 @@ from ..models import (
     PlayerSummary,
     RankedEntry,
     SpectatorSession,
+    TodayLpSummary,
 )
 from ..riot_api import RiotApiClient
 from .theme import APP_STYLESHEET, build_palette
@@ -108,12 +110,15 @@ BUILDS_INDEX_INITIAL_ICON_PREFETCH = 24
 BUILDS_SEARCH_RENDER_BATCH_SIZE = 28
 PLAYER_CARD_MIN_WIDTH = 228
 PLAYER_CARD_ASPECT_RATIO = 1.54
+TODAY_CARD_MIN_WIDTH = 288
+TODAY_CARD_ASPECT_RATIO = 0.88
 HOME_TAB_INDEX = 0
-RANKING_TAB_INDEX = 1
-PLAYERS_TAB_INDEX = 2
-LIVE_GAMES_TAB_INDEX = 3
-BUILDS_TAB_INDEX = 4
-SETTINGS_TAB_INDEX = 5
+TODAY_TAB_INDEX = 1
+RANKING_TAB_INDEX = 2
+PLAYERS_TAB_INDEX = 3
+LIVE_GAMES_TAB_INDEX = 4
+BUILDS_TAB_INDEX = 5
+SETTINGS_TAB_INDEX = 6
 _CHAMPION_ICON_CACHE: dict[int, QPixmap] = {}
 _CHAMPION_ICON_BYTES_CACHE: dict[int, bytes | None] = {}
 _ROLE_ICON_CACHE: dict[str, QPixmap] = {}
@@ -128,6 +133,8 @@ _FANDOM_LOADING_SCREEN_URL_CACHE: dict[str, str | None] = {}
 _CHAMPION_NAME_CACHE: dict[int, str] = {}
 _PLAYER_SHOWCASE_DATA_CACHE: dict[str, "PlayerShowcaseData"] = {}
 _PLAYER_SHOWCASE_BACKGROUND_CACHE: dict[tuple[str, str, int, int, int], QPixmap] = {}
+_TODAY_CARD_BACKGROUND_CACHE: dict[tuple[str, int, int], QPixmap] = {}
+_TODAY_ELO_LOGO_CACHE: dict[tuple[str, int, int, str], QPixmap] = {}
 _DISCORD_AVATAR_CACHE: dict[str, QPixmap] = {}
 _DISCORD_AVATAR_BYTES_CACHE: dict[str, bytes | None] = {}
 _OPGG_ICON_CACHE: QPixmap | None = None
@@ -156,6 +163,15 @@ _APP_LOGO_PATHS = (
     _BUNDLED_ROOT / "src" / "lolscout" / "ui" / "img" / "mmr-logo.png",
     _BUNDLED_ROOT / "ui" / "img" / "mmr-logo.png",
 )
+_ELO_LOGO_DIRS = (
+    _UI_ROOT / "img" / "elo",
+    _PROJECT_ROOT / "src" / "lolscout" / "ui" / "img" / "elo",
+    _BUNDLED_ROOT / "src" / "lolscout" / "ui" / "img" / "elo",
+    _BUNDLED_ROOT / "ui" / "img" / "elo",
+)
+_ELO_TIER_ASSET_ALIASES = {
+    "EMERALD": ("emerald", "esmeralda", "platinum"),
+}
 _HOME_HERO_GLOB_PATTERNS = (
     "home-hero-*.jpg",
     "home-hero-*.jpeg",
@@ -260,6 +276,8 @@ ROLE_DISPLAY_NAMES = {
     "BOTTOM": "ADC",
     "UTILITY": "SUPPORT",
 }
+LIVE_ROLE_ORDER = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
+LIVE_ROLE_PRIORITY = {role: index for index, role in enumerate(LIVE_ROLE_ORDER)}
 PREFERRED_LOADING_SKINS = {
     "syndra": "SKT T1 Syndra",
     "vayne": "Firecracker Vayne Prestige Edition",
@@ -277,12 +295,105 @@ PREFERRED_PLAYER_LOADING_SKINS = {
 }
 
 
+def _live_role_display_name(role: str) -> str:
+    if role in ROLE_DISPLAY_NAMES:
+        return ROLE_DISPLAY_NAMES[role]
+    return "SIN ROL" if role == "UNKNOWN" else role
+
+
+def _player_lookup_key(game_name: str, tag_line: str) -> str:
+    return f"{game_name}#{tag_line}".casefold()
+
+
+def _live_team_slots(
+    participants: list[LiveGamePlayerDetails],
+) -> list[tuple[str, LiveGamePlayerDetails | None]]:
+    sorted_participants = sorted(
+        participants,
+        key=lambda participant: (
+            LIVE_ROLE_PRIORITY.get(participant.role, len(LIVE_ROLE_ORDER)),
+            participant.game_name.casefold(),
+            participant.tag_line.casefold(),
+        ),
+    )
+    role_buckets: dict[str, list[LiveGamePlayerDetails]] = {role: [] for role in LIVE_ROLE_ORDER}
+    extras: list[LiveGamePlayerDetails] = []
+
+    for participant in sorted_participants:
+        if participant.role in role_buckets:
+            role_buckets[participant.role].append(participant)
+        else:
+            extras.append(participant)
+
+    slots: list[tuple[str, LiveGamePlayerDetails | None]] = []
+    for role in LIVE_ROLE_ORDER:
+        if role_buckets[role]:
+            slots.append((role, role_buckets[role].pop(0)))
+        else:
+            slots.append((role, None))
+
+    for role in LIVE_ROLE_ORDER:
+        extras.extend(role_buckets[role])
+
+    extras.sort(
+        key=lambda participant: (
+            participant.role.casefold(),
+            participant.game_name.casefold(),
+            participant.tag_line.casefold(),
+        )
+    )
+    slots.extend((participant.role or "UNKNOWN", participant) for participant in extras)
+    return slots
+
+
 @dataclass(frozen=True)
 class PlayerShowcaseData:
     featured_champion_id: int
     featured_name: str
     preferred_skin: str
     art_url: str | None
+
+
+def _prefetch_player_visual_assets(summaries: list[PlayerSummary]) -> None:
+    tasks: list[tuple[str, object]] = []
+    seen_champions: set[int] = set()
+    seen_champion_loadscreens: set[int] = set()
+    seen_players: set[str] = set()
+
+    for summary in summaries:
+        lookup_key = f"{summary.game_name}#{summary.tag_line}".casefold()
+        if lookup_key not in seen_players:
+            seen_players.add(lookup_key)
+            tasks.append(("discord", summary))
+        for champion in summary.most_played_champions:
+            if champion.champion_id > 0 and champion.champion_id not in seen_champions:
+                seen_champions.add(champion.champion_id)
+                tasks.append(("champion", champion.champion_id))
+        featured_champion_id = _featured_champion_id(summary)
+        if featured_champion_id > 0 and featured_champion_id not in seen_champion_loadscreens:
+            champion_name = _get_champion_display_name(featured_champion_id)
+            if champion_name:
+                seen_champion_loadscreens.add(featured_champion_id)
+                preferred_skin = _get_player_loading_skin(summary, champion_name)
+                tasks.append(("champion_loadscreen", (champion_name, preferred_skin, featured_champion_id)))
+
+    if not tasks:
+        return
+
+    with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as executor:
+        futures = []
+        for task_type, payload in tasks:
+            if task_type == "discord":
+                futures.append(executor.submit(_prefetch_discord_avatar, payload))
+            elif task_type == "champion":
+                futures.append(executor.submit(_prefetch_champion_icon, payload))
+            elif task_type == "champion_loadscreen":
+                champion_name, preferred_skin, champion_id = payload
+                futures.append(
+                    executor.submit(_prefetch_champion_loading_screen, champion_name, preferred_skin, champion_id)
+                )
+        for future in as_completed(futures):
+            future.result()
 
 
 class RankingWorker(QObject):
@@ -316,47 +427,6 @@ class RankingWorker(QObject):
                 ranked_available=False,
             )
 
-    def _prefetch_assets(self, summaries: list[PlayerSummary]) -> None:
-        tasks: list[tuple[str, object]] = []
-        seen_champions: set[int] = set()
-        seen_champion_loadscreens: set[int] = set()
-        seen_players: set[str] = set()
-
-        for summary in summaries:
-            lookup_key = f"{summary.game_name}#{summary.tag_line}".casefold()
-            if lookup_key not in seen_players:
-                seen_players.add(lookup_key)
-                tasks.append(("discord", summary))
-            for champion in summary.most_played_champions:
-                if champion.champion_id > 0 and champion.champion_id not in seen_champions:
-                    seen_champions.add(champion.champion_id)
-                    tasks.append(("champion", champion.champion_id))
-            featured_champion_id = _featured_champion_id(summary)
-            if featured_champion_id > 0 and featured_champion_id not in seen_champion_loadscreens:
-                champion_name = _get_champion_display_name(featured_champion_id)
-                if champion_name:
-                    seen_champion_loadscreens.add(featured_champion_id)
-                    preferred_skin = _get_player_loading_skin(summary, champion_name)
-                    tasks.append(("champion_loadscreen", (champion_name, preferred_skin, featured_champion_id)))
-
-        if not tasks:
-            return
-
-        with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as executor:
-            futures = []
-            for task_type, payload in tasks:
-                if task_type == "discord":
-                    futures.append(executor.submit(_prefetch_discord_avatar, payload))
-                elif task_type == "champion":
-                    futures.append(executor.submit(_prefetch_champion_icon, payload))
-                elif task_type == "champion_loadscreen":
-                    champion_name, preferred_skin, champion_id = payload
-                    futures.append(
-                        executor.submit(_prefetch_champion_loading_screen, champion_name, preferred_skin, champion_id)
-                    )
-            for future in as_completed(futures):
-                future.result()
-
     def run(self) -> None:
         try:
             total = len(self.players)
@@ -383,8 +453,73 @@ class RankingWorker(QObject):
 
         resolved_summaries = [summary for summary in summaries if summary is not None]
         self.progress.emit("Descargando iconos del ranking...")
-        self._prefetch_assets(resolved_summaries)
+        _prefetch_player_visual_assets(resolved_summaries)
         self.progress.emit("Procesando ranking...")
+        self.finished.emit(resolved_summaries)
+
+
+class TodayLpWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, api_key: str, platform: str, players: list[tuple[str, str]], force_refresh: bool = False) -> None:
+        super().__init__()
+        self.api_key = api_key
+        self.platform = platform
+        self.players = players
+        self.force_refresh = force_refresh
+
+    def _fetch_today_player(self, game_name: str, tag_line: str) -> TodayLpSummary:
+        client = RiotApiClient(self.api_key, timeout=12)
+        try:
+            return client.fetch_player_today_lp(
+                game_name=game_name,
+                tag_line=tag_line,
+                platform=self.platform,
+                force_refresh=self.force_refresh,
+            )
+        except Exception as exc:
+            return TodayLpSummary(
+                player=PlayerSummary(
+                    game_name=game_name,
+                    tag_line=tag_line,
+                    summoner_level=0,
+                    profile_icon_id=0,
+                    platform=self.platform,
+                    ranked_available=False,
+                ),
+                current_rank_text="No disponible",
+                baseline_note=f"No se pudo calcular hoy: {exc}",
+            )
+
+    def run(self) -> None:
+        try:
+            total = len(self.players)
+            if total == 0:
+                self.finished.emit([])
+                return
+
+            summaries: list[TodayLpSummary | None] = [None] * total
+            with ThreadPoolExecutor(max_workers=min(4, total)) as executor:
+                future_map = {
+                    executor.submit(self._fetch_today_player, game_name, tag_line): (index, game_name, tag_line)
+                    for index, (game_name, tag_line) in enumerate(self.players)
+                }
+                completed = 0
+                for future in as_completed(future_map):
+                    index, game_name, tag_line = future_map[future]
+                    completed += 1
+                    self.progress.emit(f"Calculando hoy {completed}/{total}: {game_name}#{tag_line}")
+                    summaries[index] = future.result()
+        except Exception as exc:  # pragma: no cover
+            self.failed.emit(f"Fallo inesperado: {exc}")
+            return
+
+        resolved_summaries = [summary for summary in summaries if summary is not None]
+        players = [summary.player for summary in resolved_summaries]
+        self.progress.emit("Preparando tarjetas de hoy...")
+        _prefetch_player_visual_assets(players)
         self.finished.emit(resolved_summaries)
 
 
@@ -642,19 +777,34 @@ class StatCard(QFrame):
 class LoaderSpinner(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._angle = 0
+        self._rotation_degrees = 0.0
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
+        self._timer.setInterval(16)
         self._timer.timeout.connect(self._advance)
-        self._timer.start(90)
+        self._timer.start()
 
         self.setFixedSize(112, 112)
 
     def _advance(self) -> None:
-        self._angle = (self._angle + 1) % 12
+        self._rotation_degrees = (self._rotation_degrees + 4.5) % 360.0
         self.update()
 
     def sizeHint(self) -> QSize:
         return QSize(112, 112)
+
+    @staticmethod
+    def _angular_distance(angle_a: float, angle_b: float) -> float:
+        return abs(((angle_a - angle_b + 180.0) % 360.0) - 180.0)
+
+    @staticmethod
+    def _blend_color(start: QColor, end: QColor, factor: float) -> QColor:
+        clamped_factor = max(0.0, min(1.0, factor))
+        return QColor(
+            round(start.red() + (end.red() - start.red()) * clamped_factor),
+            round(start.green() + (end.green() - start.green()) * clamped_factor),
+            round(start.blue() + (end.blue() - start.blue()) * clamped_factor),
+        )
 
     def paintEvent(self, event) -> None:
         del event
@@ -681,7 +831,7 @@ class LoaderSpinner(QWidget):
             rune_radius = spinner_size * 0.115
             painter.save()
             painter.translate(center_x, center_y)
-            painter.rotate(self._angle * 11.5)
+            painter.rotate(self._rotation_degrees)
 
             outer_pen = QPen(QColor(201, 164, 107, 168), max(1.4, spinner_size * 0.017))
             outer_pen.setCapStyle(Qt.RoundCap)
@@ -695,7 +845,7 @@ class LoaderSpinner(QWidget):
 
             painter.save()
             painter.translate(center_x, center_y)
-            painter.rotate(-self._angle * 8.0)
+            painter.rotate(-(self._rotation_degrees * 0.72))
 
             inner_radius = spinner_size * 0.074
             inner_pen = QPen(QColor(245, 232, 203, 118), max(1.0, spinner_size * 0.012))
@@ -720,21 +870,24 @@ class LoaderSpinner(QWidget):
             painter.setBrush(QColor(247, 238, 223, 218))
             painter.drawEllipse(QPointF(center_x, center_y), spinner_size * 0.014, spinner_size * 0.014)
 
+            lead_angle = self._rotation_degrees % 360.0
+            base_dot_color = QColor("#566070")
+            trail_dot_color = QColor("#c9a46b")
+            head_dot_color = QColor("#f2ddbb")
             for index in range(12):
-                distance = (index - self._angle) % 12
-                emphasis = max(0.0, 1.0 - (distance / 8.0))
+                dot_angle = index * 30.0
+                trail_distance = ((lead_angle - dot_angle) % 360.0) / 30.0
+                head_distance = self._angular_distance(dot_angle, lead_angle)
+                trail_emphasis = max(0.0, 1.0 - (trail_distance / 8.0))
+                head_emphasis = max(0.0, 1.0 - (head_distance / 24.0))
+                emphasis = max(trail_emphasis, head_emphasis)
                 radius = dot_radius * (0.72 + emphasis * 0.46)
-                angle = math.radians((index * 30) - 90)
+                angle = math.radians(dot_angle - 90.0)
                 x = center_x + math.cos(angle) * orbit_radius
                 y = center_y + math.sin(angle) * orbit_radius
 
-                if distance == 0:
-                    color = QColor("#f2ddbb")
-                elif distance <= 3:
-                    color = QColor("#c9a46b")
-                else:
-                    color = QColor("#566070")
-
+                color = self._blend_color(base_dot_color, trail_dot_color, trail_emphasis)
+                color = self._blend_color(color, head_dot_color, head_emphasis)
                 alpha = 58 + int(emphasis * 175)
                 color.setAlpha(alpha)
                 painter.setBrush(color)
@@ -747,12 +900,12 @@ class LoaderSpinner(QWidget):
 class InlineLoaderCard(QFrame):
     def __init__(self, title: str, message: str | None = None) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildPanelCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 26, 28, 26)
-        layout.setSpacing(18)
+        layout.setSpacing(12)
         layout.setAlignment(Qt.AlignCenter)
 
         spinner = LoaderSpinner(self)
@@ -945,7 +1098,7 @@ class RankingRow(QFrame):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(10)
 
-        title = QLabel("Campeones mas jugados")
+        title = QLabel("Campeones más jugados")
         title.setObjectName("RankingInsightsTitle")
         column.addWidget(title)
 
@@ -1169,6 +1322,192 @@ def _get_app_logo(size: int = 96) -> QPixmap:
     return fallback
 
 
+def _resolve_elo_logo_path(asset_name: str) -> Path | None:
+    normalized_name = str(asset_name or "").strip().lower()
+    if not normalized_name:
+        return None
+
+    for directory in _ELO_LOGO_DIRS:
+        for extension in ("webp", "png"):
+            candidate = directory / f"{normalized_name}.{extension}"
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def _resolve_tier_logo_source(tier: str) -> tuple[Path | None, str]:
+    normalized_tier = str(tier or "").strip().upper()
+    if not normalized_tier:
+        return None, ""
+
+    candidates = _ELO_TIER_ASSET_ALIASES.get(normalized_tier, (normalized_tier.lower(),))
+    for candidate_name in candidates:
+        source = _resolve_elo_logo_path(candidate_name)
+        if source is not None:
+            return source, candidate_name
+    return None, ""
+
+
+def _clamp_channel(value: float) -> int:
+    return max(0, min(255, int(round(value))))
+
+
+def _enhance_logo_detail(pixmap: QPixmap, contrast: float = 1.08, sharpness: float = 0.34) -> QPixmap:
+    if pixmap.isNull():
+        return pixmap
+
+    working = pixmap
+    max_dimension = max(working.width(), working.height())
+    if max_dimension < 220:
+        upscale_target = 260 if max_dimension < 180 else 220
+        working = working.scaled(upscale_target, upscale_target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    source = working.toImage().convertToFormat(QImage.Format_ARGB32)
+    result = source.copy()
+
+    for y in range(1, source.height() - 1):
+        for x in range(1, source.width() - 1):
+            center = source.pixelColor(x, y)
+            if center.alpha() == 0:
+                continue
+
+            neighbors = (
+                source.pixelColor(x - 1, y),
+                source.pixelColor(x + 1, y),
+                source.pixelColor(x, y - 1),
+                source.pixelColor(x, y + 1),
+            )
+            avg_red = sum(color.red() for color in neighbors) / 4.0
+            avg_green = sum(color.green() for color in neighbors) / 4.0
+            avg_blue = sum(color.blue() for color in neighbors) / 4.0
+
+            sharpened_red = center.red() + (center.red() - avg_red) * sharpness
+            sharpened_green = center.green() + (center.green() - avg_green) * sharpness
+            sharpened_blue = center.blue() + (center.blue() - avg_blue) * sharpness
+
+            adjusted_red = 128.0 + (sharpened_red - 128.0) * contrast
+            adjusted_green = 128.0 + (sharpened_green - 128.0) * contrast
+            adjusted_blue = 128.0 + (sharpened_blue - 128.0) * contrast
+
+            result.setPixelColor(
+                x,
+                y,
+                QColor(
+                    _clamp_channel(adjusted_red),
+                    _clamp_channel(adjusted_green),
+                    _clamp_channel(adjusted_blue),
+                    center.alpha(),
+                ),
+            )
+
+    return QPixmap.fromImage(result)
+
+
+def _tint_pixmap(pixmap: QPixmap, color: QColor, alpha: int) -> QPixmap:
+    tinted = QPixmap(pixmap.size())
+    tinted.fill(Qt.transparent)
+
+    painter = QPainter(tinted)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+    overlay = QColor(color)
+    overlay.setAlpha(max(0, min(255, alpha)))
+    painter.fillRect(tinted.rect(), overlay)
+    painter.end()
+    return tinted
+
+
+def _set_pixmap_opacity(pixmap: QPixmap, opacity: float) -> QPixmap:
+    if pixmap.isNull():
+        return pixmap
+
+    canvas = QPixmap(pixmap.size())
+    canvas.fill(Qt.transparent)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    painter.setOpacity(max(0.0, min(1.0, opacity)))
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return canvas
+
+
+def _soft_blur_pixmap(pixmap: QPixmap, scale_factor: float = 0.28) -> QPixmap:
+    if pixmap.isNull():
+        return pixmap
+
+    width = max(1, pixmap.width())
+    height = max(1, pixmap.height())
+    reduced_width = max(1, int(width * max(0.08, min(scale_factor, 1.0))))
+    reduced_height = max(1, int(height * max(0.08, min(scale_factor, 1.0))))
+    reduced = pixmap.scaled(reduced_width, reduced_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return reduced.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+
+def _build_today_elo_logo(tier: str | None, width: int, height: int) -> QPixmap | None:
+    normalized_tier = str(tier or "").strip().upper()
+    if not normalized_tier or width <= 0 or height <= 0:
+        return None
+
+    tier_color = SOLOQ_TIER_COLORS.get(normalized_tier, "#d8c29b")
+    cache_key = (normalized_tier, width, height, tier_color)
+    cached = _TODAY_ELO_LOGO_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    source, source_key = _resolve_tier_logo_source(normalized_tier)
+    if source is None:
+        return None
+
+    pixmap = QPixmap(str(source))
+    if pixmap.isNull():
+        return None
+
+    pixmap = _crop_transparent_margins(pixmap)
+    accent = QColor(tier_color)
+    if normalized_tier == "EMERALD" and source_key == "platinum":
+        pixmap = _tint_pixmap(pixmap, accent, 118)
+    if source_key in {"emerald", "esmeralda"} or max(pixmap.width(), pixmap.height()) < 190:
+        pixmap = _enhance_logo_detail(pixmap, contrast=1.12, sharpness=0.42)
+
+    max_logo_width = max(72, int(width * 0.92))
+    max_logo_height = max(52, int(height * 0.88))
+    scaled = pixmap.scaled(max_logo_width, max_logo_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    canvas = QPixmap(width, height)
+    canvas.fill(Qt.transparent)
+
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    try:
+        glow = QRadialGradient(width * 0.50, height * 0.54, max(width, height) * 0.42)
+        glow.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 72))
+        glow.setColorAt(0.42, QColor(92, 198, 255, 26))
+        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QRectF(width * 0.16, height * 0.14, width * 0.68, height * 0.72))
+
+        shadow = _tint_pixmap(scaled, accent, 255)
+        center_x = (width - scaled.width()) // 2
+        center_y = (height - scaled.height()) // 2 + int(height * 0.02)
+
+        painter.setOpacity(0.18)
+        for offset_x, offset_y in ((0, 7), (-4, 4), (4, 4)):
+            painter.drawPixmap(center_x + offset_x, center_y + offset_y, shadow)
+
+        painter.setOpacity(1.0)
+        painter.drawPixmap(center_x, center_y, scaled)
+    finally:
+        painter.end()
+
+    _TODAY_ELO_LOGO_CACHE[cache_key] = canvas
+    return canvas
+
+
 def _resolve_home_hero_source() -> Path | None:
     global _HOME_HERO_SELECTED_SOURCE
     if _HOME_HERO_SELECTED_SOURCE is not None:
@@ -1322,6 +1661,29 @@ def _get_home_action_icon(icon_key: str, size: int = 34) -> QPixmap:
 
             painter.setBrush(QColor("#0d1016"))
             painter.drawEllipse(QRectF(size * 0.46, size * 0.46, size * 0.08, size * 0.08))
+
+        elif icon_key == "today":
+            dial = QRectF(size * 0.18, size * 0.18, size * 0.64, size * 0.64)
+            painter.setBrush(QColor(215, 176, 109, 22))
+            painter.setPen(_pen(1.8))
+            painter.drawEllipse(dial)
+
+            painter.setPen(_pen(1.5))
+            painter.drawLine(QPointF(size * 0.50, size * 0.50), QPointF(size * 0.50, size * 0.30))
+            painter.drawLine(QPointF(size * 0.50, size * 0.50), QPointF(size * 0.65, size * 0.57))
+
+            arrow = QPainterPath()
+            arrow.moveTo(size * 0.28, size * 0.82)
+            arrow.lineTo(size * 0.42, size * 0.66)
+            arrow.lineTo(size * 0.46, size * 0.72)
+            arrow.lineTo(size * 0.70, size * 0.48)
+            arrow.lineTo(size * 0.76, size * 0.54)
+            arrow.lineTo(size * 0.52, size * 0.78)
+            arrow.lineTo(size * 0.58, size * 0.82)
+            arrow.closeSubpath()
+            painter.setBrush(QColor(243, 223, 184, 168))
+            painter.setPen(QPen(gold_dark, 1.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawPath(arrow)
 
         else:
             painter.setBrush(QColor(215, 176, 109, 50))
@@ -1962,8 +2324,10 @@ def _prefetch_champion_loading_screen(champion_name: str, preferred_skin: str = 
             _prefetch_remote_image(loadscreen_url)
 
 
-def _player_lookup_key(summary: PlayerSummary) -> str:
-        return f"{summary.game_name}#{summary.tag_line}".casefold()
+def _player_lookup_key(summary_or_game_name: PlayerSummary | str, tag_line: str | None = None) -> str:
+        if isinstance(summary_or_game_name, PlayerSummary):
+            return f"{summary_or_game_name.game_name}#{summary_or_game_name.tag_line}".casefold()
+        return f"{summary_or_game_name}#{tag_line or ''}".casefold()
 
 
 def _featured_name_from_summary(summary: PlayerSummary, featured_champion_id: int) -> str:
@@ -2055,6 +2419,7 @@ def _build_player_showcase_background(url: str | None, accent_hex: str, champion
         painter = QPainter(canvas)
         try:
             painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             rect = QRectF(1, 1, width - 2, height - 2)
             path = QPainterPath()
             path.addRoundedRect(rect, 24, 24)
@@ -2105,6 +2470,272 @@ def _build_player_showcase_background(url: str | None, accent_hex: str, champion
 
         _PLAYER_SHOWCASE_BACKGROUND_CACHE[cache_key] = canvas
         return canvas
+
+
+def _draw_today_energy_streak(painter: QPainter, points: list[QPointF], tint: QColor) -> None:
+    if len(points) < 2:
+        return
+
+    path = QPainterPath(points[0])
+    for point in points[1:]:
+        path.lineTo(point)
+
+    glow_pen = QPen(QColor(tint.red(), tint.green(), tint.blue(), 78), 5.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    core_pen = QPen(QColor("#eefcff"), 1.25, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(glow_pen)
+    painter.drawPath(path)
+    painter.setPen(core_pen)
+    painter.drawPath(path)
+
+
+def _draw_today_crest_motif(painter: QPainter, width: int, height: int, accent: QColor) -> None:
+    def _polygon_path(points: list[QPointF]) -> QPainterPath:
+        path = QPainterPath(points[0])
+        for point in points[1:]:
+            path.lineTo(point)
+        path.closeSubpath()
+        return path
+
+    gold = QColor("#cfa86a")
+    gold_soft = QColor("#f3dfb8")
+    blue = QColor("#59d2ff")
+    blue_soft = QColor("#baf7ff")
+    frame_blue = QColor(97, 151, 196, 26)
+
+    center_x = width * 0.50
+    center_y = height * 0.25
+    motif_w = width * 0.42
+    motif_h = height * 0.22
+
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(frame_blue, 1.0))
+    for x_factor, bend_factor, end_factor in (
+        (0.18, 0.13, 0.37),
+        (0.31, 0.11, 0.31),
+        (0.50, 0.09, 0.27),
+        (0.69, 0.11, 0.31),
+        (0.82, 0.13, 0.37),
+    ):
+        guide = QPainterPath()
+        guide.moveTo(width * x_factor, height * 0.02)
+        guide.lineTo(width * x_factor, height * bend_factor)
+        guide.lineTo(width * 0.50, height * end_factor)
+        painter.drawPath(guide)
+
+    frame_pen = QPen(QColor(gold.red(), gold.green(), gold.blue(), 62), 1.25, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(frame_pen)
+    painter.drawLine(QPointF(width * 0.08, height * 0.16), QPointF(width * 0.08, height * 0.43))
+    painter.drawLine(QPointF(width * 0.92, height * 0.16), QPointF(width * 0.92, height * 0.43))
+    painter.drawLine(QPointF(width * 0.08, height * 0.16), QPointF(width * 0.13, height * 0.08))
+    painter.drawLine(QPointF(width * 0.92, height * 0.16), QPointF(width * 0.87, height * 0.08))
+
+    glow = QRadialGradient(center_x, center_y + motif_h * 0.04, motif_w * 0.48)
+    glow.setColorAt(0.0, QColor(78, 203, 255, 52))
+    glow.setColorAt(0.52, QColor(accent.red(), accent.green(), accent.blue(), 18))
+    glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(glow)
+    painter.drawEllipse(
+        QRectF(
+            center_x - motif_w * 0.48,
+            center_y - motif_h * 0.43,
+            motif_w * 0.96,
+            motif_h * 1.05,
+        )
+    )
+
+    left_wing_points = [
+        QPointF(center_x - motif_w * 0.03, center_y - motif_h * 0.16),
+        QPointF(center_x - motif_w * 0.14, center_y - motif_h * 0.32),
+        QPointF(center_x - motif_w * 0.29, center_y - motif_h * 0.12),
+        QPointF(center_x - motif_w * 0.44, center_y - motif_h * 0.03),
+        QPointF(center_x - motif_w * 0.35, center_y + motif_h * 0.18),
+        QPointF(center_x - motif_w * 0.18, center_y + motif_h * 0.10),
+        QPointF(center_x - motif_w * 0.08, center_y + motif_h * 0.26),
+        QPointF(center_x - motif_w * 0.01, center_y + motif_h * 0.14),
+    ]
+    right_wing_points = [QPointF((center_x * 2.0) - point.x(), point.y()) for point in left_wing_points]
+    left_wing = _polygon_path(left_wing_points)
+    right_wing = _polygon_path(right_wing_points)
+
+    shield_points = [
+        QPointF(center_x, center_y - motif_h * 0.39),
+        QPointF(center_x + motif_w * 0.10, center_y - motif_h * 0.23),
+        QPointF(center_x + motif_w * 0.08, center_y + motif_h * 0.04),
+        QPointF(center_x, center_y + motif_h * 0.37),
+        QPointF(center_x - motif_w * 0.08, center_y + motif_h * 0.04),
+        QPointF(center_x - motif_w * 0.10, center_y - motif_h * 0.23),
+    ]
+    shield_path = _polygon_path(shield_points)
+
+    inner_shield_points = [
+        QPointF(center_x, center_y - motif_h * 0.26),
+        QPointF(center_x + motif_w * 0.054, center_y - motif_h * 0.15),
+        QPointF(center_x + motif_w * 0.044, center_y + motif_h * 0.02),
+        QPointF(center_x, center_y + motif_h * 0.24),
+        QPointF(center_x - motif_w * 0.044, center_y + motif_h * 0.02),
+        QPointF(center_x - motif_w * 0.054, center_y - motif_h * 0.15),
+    ]
+    inner_shield = _polygon_path(inner_shield_points)
+
+    halo_pen = QPen(QColor(89, 210, 255, 22), max(4.5, motif_w * 0.028), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(halo_pen)
+    for crest_path in (left_wing, right_wing, shield_path):
+        painter.drawPath(crest_path)
+
+    wing_fill = QLinearGradient(center_x, center_y - motif_h * 0.28, center_x, center_y + motif_h * 0.28)
+    wing_fill.setColorAt(0.0, QColor(7, 18, 31, 152))
+    wing_fill.setColorAt(1.0, QColor(4, 10, 18, 214))
+    shield_fill = QLinearGradient(center_x, center_y - motif_h * 0.39, center_x, center_y + motif_h * 0.37)
+    shield_fill.setColorAt(0.0, QColor(10, 24, 41, 210))
+    shield_fill.setColorAt(0.55, QColor(7, 18, 31, 235))
+    shield_fill.setColorAt(1.0, QColor(4, 11, 20, 248))
+
+    outline_pen = QPen(QColor(gold.red(), gold.green(), gold.blue(), 182), 2.1, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(outline_pen)
+    painter.setBrush(wing_fill)
+    painter.drawPath(left_wing)
+    painter.drawPath(right_wing)
+    painter.setBrush(shield_fill)
+    painter.drawPath(shield_path)
+
+    painter.setPen(QPen(QColor(gold_soft.red(), gold_soft.green(), gold_soft.blue(), 158), 1.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setBrush(QColor(6, 13, 22, 78))
+    painter.drawPath(inner_shield)
+
+    sigil = QPainterPath()
+    sigil.moveTo(center_x, center_y - motif_h * 0.08)
+    sigil.cubicTo(
+        center_x + motif_w * 0.028,
+        center_y - motif_h * 0.02,
+        center_x + motif_w * 0.036,
+        center_y + motif_h * 0.05,
+        center_x,
+        center_y + motif_h * 0.16,
+    )
+    sigil.cubicTo(
+        center_x - motif_w * 0.036,
+        center_y + motif_h * 0.05,
+        center_x - motif_w * 0.028,
+        center_y - motif_h * 0.02,
+        center_x,
+        center_y - motif_h * 0.08,
+    )
+    sigil.closeSubpath()
+    sigil_fill = QLinearGradient(center_x, center_y - motif_h * 0.08, center_x, center_y + motif_h * 0.16)
+    sigil_fill.setColorAt(0.0, QColor(192, 248, 255, 224))
+    sigil_fill.setColorAt(0.4, QColor(114, 220, 255, 182))
+    sigil_fill.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 92))
+    painter.setPen(QPen(QColor(186, 247, 255, 126), 1.0))
+    painter.setBrush(sigil_fill)
+    painter.drawPath(sigil)
+
+    painter.setPen(QPen(QColor(gold_soft.red(), gold_soft.green(), gold_soft.blue(), 118), 1.05, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setBrush(Qt.NoBrush)
+    painter.drawLine(
+        QPointF(center_x - motif_w * 0.08, center_y - motif_h * 0.38),
+        QPointF(center_x - motif_w * 0.18, center_y - motif_h * 0.50),
+    )
+    painter.drawLine(
+        QPointF(center_x + motif_w * 0.08, center_y - motif_h * 0.38),
+        QPointF(center_x + motif_w * 0.18, center_y - motif_h * 0.50),
+    )
+    painter.drawLine(
+        QPointF(center_x - motif_w * 0.22, center_y - motif_h * 0.20),
+        QPointF(center_x + motif_w * 0.22, center_y - motif_h * 0.20),
+    )
+
+    _draw_today_energy_streak(
+        painter,
+        [
+            QPointF(center_x - motif_w * 0.49, center_y - motif_h * 0.06),
+            QPointF(center_x - motif_w * 0.44, center_y - motif_h * 0.12),
+            QPointF(center_x - motif_w * 0.40, center_y - motif_h * 0.02),
+            QPointF(center_x - motif_w * 0.35, center_y - motif_h * 0.08),
+        ],
+        blue,
+    )
+    _draw_today_energy_streak(
+        painter,
+        [
+            QPointF(center_x + motif_w * 0.31, center_y + motif_h * 0.02),
+            QPointF(center_x + motif_w * 0.36, center_y - motif_h * 0.08),
+            QPointF(center_x + motif_w * 0.42, center_y + motif_h * 0.00),
+            QPointF(center_x + motif_w * 0.46, center_y - motif_h * 0.10),
+        ],
+        blue_soft,
+    )
+
+
+def _build_today_card_background(accent_hex: str, width: int, height: int) -> QPixmap:
+    cache_key = (accent_hex, width, height)
+    cached = _TODAY_CARD_BACKGROUND_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    canvas = QPixmap(width, height)
+    canvas.fill(Qt.transparent)
+
+    painter = QPainter(canvas)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(1, 1, width - 2, height - 2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 24, 24)
+        painter.setClipPath(path)
+
+        accent = QColor(accent_hex)
+        base = QLinearGradient(0, 0, 0, height)
+        base.setColorAt(0.0, QColor("#181d27"))
+        base.setColorAt(0.46, QColor("#131821"))
+        base.setColorAt(1.0, QColor("#0c1016"))
+        painter.fillPath(path, base)
+
+        haze = QLinearGradient(0, 0, 0, height * 0.78)
+        haze.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 26))
+        haze.setColorAt(0.18, QColor(84, 190, 255, 22))
+        haze.setColorAt(0.50, QColor(0, 0, 0, 0))
+        painter.fillPath(path, haze)
+
+        upper_focus = QRadialGradient(width * 0.50, height * 0.26, width * 0.42)
+        upper_focus.setColorAt(0.0, QColor(103, 194, 255, 30))
+        upper_focus.setColorAt(0.42, QColor(accent.red(), accent.green(), accent.blue(), 20))
+        upper_focus.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.fillPath(path, upper_focus)
+
+        painter.setClipping(False)
+
+        guide_pen = QPen(QColor(accent.red(), accent.green(), accent.blue(), 42), 1.0)
+        guide_pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(guide_pen)
+        guide_top = 24.0
+        guide_bottom = height * 0.42
+        painter.drawLine(QPointF(30.0, guide_top), QPointF(30.0, guide_bottom))
+        painter.drawLine(QPointF(width - 30.0, guide_top), QPointF(width - 30.0, guide_bottom))
+
+        lower_shadow = QLinearGradient(0, height * 0.54, 0, height)
+        lower_shadow.setColorAt(0.0, QColor(7, 10, 16, 0))
+        lower_shadow.setColorAt(0.34, QColor(7, 10, 16, 76))
+        lower_shadow.setColorAt(1.0, QColor(7, 10, 16, 228))
+        painter.fillPath(path, lower_shadow)
+
+        accent_bar = QRectF((width / 2) - 30, 0, 60, 8)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(accent_hex))
+        painter.drawRoundedRect(accent_bar, 4, 4)
+
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(accent_hex), 1.8))
+        painter.drawRoundedRect(rect, 24, 24)
+        painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0))
+        painter.drawRoundedRect(QRectF(6, 6, width - 12, height - 12), 19, 19)
+    finally:
+        painter.end()
+
+    _TODAY_CARD_BACKGROUND_CACHE[cache_key] = canvas
+    return canvas
 
 
 def _soloq_accent(summary: PlayerSummary) -> str:
@@ -2290,7 +2921,568 @@ class PlayerShowcaseCard(QFrame):
         super().mouseReleaseEvent(event)
 
 
-class LiveGameRow(QFrame):
+class TodayLpCard(QFrame):
+    def __init__(self, summary: TodayLpSummary, card_width: int = TODAY_CARD_MIN_WIDTH) -> None:
+        super().__init__()
+        self.summary = summary
+        self.player = summary.player
+        self._accent = self._change_accent(summary)
+
+        self._card_width = max(TODAY_CARD_MIN_WIDTH, card_width)
+        self._card_height = self._height_for_width(self._card_width)
+        self.setObjectName("TodayPlayerCard")
+        self.setFixedSize(self._card_width, self._card_height)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor if self.player.opgg_url else Qt.ArrowCursor)
+        if self.player.opgg_url:
+            self.setToolTip("Abrir perfil en OP.GG")
+
+        self._background_label = QLabel(self)
+        self._background_label.setGeometry(0, 0, self._card_width, self._card_height)
+        self._background_label.setPixmap(_build_today_card_background(self._accent, self._card_width, self._card_height))
+        self._background_label.setStyleSheet("background: transparent;")
+        self._background_label.lower()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(10)
+
+        delta_label = QLabel(self._delta_text())
+        delta_label.setObjectName("TodayDeltaPill")
+        delta_label.setStyleSheet(self._delta_stylesheet())
+
+        avatar = QLabel()
+        avatar.setFixedSize(42, 42)
+        avatar.setPixmap(_load_discord_avatar(self.player))
+        avatar.setScaledContents(True)
+        avatar.setStyleSheet(f"background: transparent; border-radius: 21px; border: 1px solid {self._accent};")
+
+        top_row.addWidget(delta_label, 0, Qt.AlignLeft | Qt.AlignTop)
+        top_row.addStretch(1)
+        top_row.addWidget(avatar, 0, Qt.AlignRight | Qt.AlignTop)
+        root.addLayout(top_row)
+        root.addSpacing(8)
+
+        self._hero_panel = QFrame()
+        self._hero_panel.setObjectName("TodayCardHeroPanel")
+        self._hero_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        hero_layout = QVBoxLayout(self._hero_panel)
+        hero_layout.setContentsMargins(16, 10, 16, 10)
+        hero_layout.setSpacing(6)
+        hero_layout.setAlignment(Qt.AlignCenter)
+
+        self._elo_logo_label = QLabel()
+        self._elo_logo_label.setAlignment(Qt.AlignCenter)
+        self._elo_logo_label.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._elo_logo_label.setStyleSheet("background: transparent;")
+        self._elo_logo_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self._rank_chip_label = QLabel()
+        self._rank_chip_label.setAlignment(Qt.AlignCenter)
+        self._rank_chip_label.setAttribute(Qt.WA_TranslucentBackground, True)
+
+        hero_layout.addStretch(1)
+        hero_layout.addWidget(self._elo_logo_label, 0, Qt.AlignHCenter)
+        hero_layout.addWidget(self._rank_chip_label, 0, Qt.AlignHCenter)
+        hero_layout.addStretch(1)
+        root.addWidget(self._hero_panel)
+        root.addSpacing(8)
+        self._refresh_rank_logo()
+        root.addStretch(1)
+
+        footer = QFrame(self)
+        footer.setObjectName("TodayCardInfoPanel")
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(14, 12, 14, 12)
+        footer_layout.setSpacing(4)
+
+        name_label = QLabel(summary.riot_id)
+        name_label.setObjectName("TodayCardName")
+        name_label.setWordWrap(True)
+
+        current_label = QLabel(self._current_status_text())
+        current_label.setObjectName("TodayCardCurrent")
+        current_label.setWordWrap(True)
+
+        matches_title = QLabel("ÚLTIMAS DE HOY")
+        matches_title.setObjectName("TodayMatchesTitle")
+        matches_title.setWordWrap(True)
+
+        footer_layout.addWidget(name_label)
+        footer_layout.addWidget(current_label)
+        footer_layout.addSpacing(2)
+        footer_layout.addWidget(matches_title)
+        if summary.today_matches:
+            for match in summary.today_matches[:2]:
+                footer_layout.addWidget(self._build_match_row(match))
+        else:
+            empty_label = QLabel("No ha jugado hoy")
+            empty_label.setObjectName("TodayCardMeta")
+            empty_label.setWordWrap(True)
+            footer_layout.addWidget(empty_label)
+        root.addWidget(footer)
+
+    def set_card_width(self, width: int) -> None:
+        next_width = max(TODAY_CARD_MIN_WIDTH, width)
+        if next_width == self._card_width:
+            return
+        self._card_width = next_width
+        self._card_height = self._height_for_width(self._card_width)
+        self.setFixedSize(self._card_width, self._card_height)
+        self._background_label.setGeometry(0, 0, self._card_width, self._card_height)
+        self._background_label.setPixmap(_build_today_card_background(self._accent, self._card_width, self._card_height))
+        self._refresh_rank_logo()
+
+    @staticmethod
+    def _height_for_width(width: int) -> int:
+        return max(336, int(width * TODAY_CARD_ASPECT_RATIO))
+
+    @staticmethod
+    def _change_accent(summary: TodayLpSummary) -> str:
+        if summary.lp_change is None:
+            return "#8f99ab"
+        if summary.lp_change > 0:
+            return "#5dd296"
+        if summary.lp_change < 0:
+            return "#e16b7b"
+        return "#d8b379"
+
+    def _delta_text(self) -> str:
+        if self.summary.lp_change is None:
+            return "Sin base"
+        return self.summary.change_text
+
+    def _delta_stylesheet(self) -> str:
+        color = QColor(self._accent)
+        return (
+            f"background: rgba({color.red()}, {color.green()}, {color.blue()}, 34);"
+            f"border: 1px solid rgba({color.red()}, {color.green()}, {color.blue()}, 160);"
+            "border-radius: 14px;"
+            "padding: 8px 12px;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 11.4pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.3px;"
+            "color: #f5efe4;"
+        )
+
+    def _rank_tier(self) -> str:
+        if self.player.soloq and self.player.soloq.tier:
+            return self.player.soloq.tier
+        return ""
+
+    def _rank_badge_text(self) -> str:
+        if self.player.soloq and self.player.soloq.tier:
+            rank = f" {self.player.soloq.rank}" if self.player.soloq.rank else ""
+            return f"{self.player.soloq.tier.title()}{rank}"
+        return "Sin SoloQ"
+
+    def _current_status_text(self) -> str:
+        if self.player.soloq and self.player.soloq.tier:
+            return f"{int(self.player.soloq.league_points or 0)} LP actuales"
+        return self.summary.current_rank_text or "Sin SoloQ"
+
+    def _rank_chip_stylesheet(self) -> str:
+        tier_color = QColor(SOLOQ_TIER_COLORS.get(self._rank_tier().upper(), "#8f99ab"))
+        return (
+            f"background: rgba({tier_color.red()}, {tier_color.green()}, {tier_color.blue()}, 28);"
+            f"border: 1px solid rgba({tier_color.red()}, {tier_color.green()}, {tier_color.blue()}, 142);"
+            "border-radius: 11px;"
+            "padding: 5px 12px;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 8.6pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.7px;"
+            "color: #f2efe7;"
+        )
+
+    def _refresh_rank_logo(self) -> None:
+        hero_height = max(108, int(self._card_height * 0.30))
+        self._hero_panel.setFixedHeight(hero_height)
+
+        width = max(168, self._card_width - 84)
+        height = max(82, int(hero_height * 0.60))
+        self._elo_logo_label.setFixedSize(width, height)
+        self._rank_chip_label.setText(self._rank_badge_text())
+        self._rank_chip_label.setStyleSheet(self._rank_chip_stylesheet())
+
+        logo = _build_today_elo_logo(self._rank_tier(), width, height)
+        if logo is not None and not logo.isNull():
+            self._elo_logo_label.setPixmap(logo)
+            self._elo_logo_label.setText("")
+            self._elo_logo_label.setStyleSheet("background: transparent;")
+            return
+
+        self._elo_logo_label.setPixmap(QPixmap())
+        self._elo_logo_label.setText("Sin SoloQ")
+        self._elo_logo_label.setStyleSheet(
+            "background: transparent;"
+            "color: #d9c7a4;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 12pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.4px;"
+        )
+
+    def _build_match_row(self, match) -> QFrame:
+        row = QFrame()
+        row.setObjectName("TodayMatchRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
+
+        result = QLabel("W" if match.won else "L")
+        result.setAlignment(Qt.AlignCenter)
+        badge_color = "#5dd296" if match.won else "#e16b7b"
+        color = QColor(badge_color)
+        result.setStyleSheet(
+            f"background: rgba({color.red()}, {color.green()}, {color.blue()}, 34);"
+            f"border: 1px solid rgba({color.red()}, {color.green()}, {color.blue()}, 160);"
+            "border-radius: 10px;"
+            "padding: 4px 8px;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 8.8pt;"
+            "font-weight: 700;"
+            "color: #f5efe4;"
+        )
+        result.setFixedWidth(28)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+
+        champion_name = match.champion or "Partida"
+        champion_label = QLabel(champion_name)
+        champion_label.setObjectName("TodayMatchChampion")
+        champion_label.setWordWrap(True)
+
+        meta_parts = [f"{match.kills}/{match.deaths}/{match.assists}"]
+        if match.played_at_text:
+            meta_parts.append(match.played_at_text)
+        meta_label = QLabel(" · ".join(meta_parts))
+        meta_label.setObjectName("TodayMatchMeta")
+        meta_label.setWordWrap(True)
+
+        text_col.addWidget(champion_label)
+        text_col.addWidget(meta_label)
+
+        layout.addWidget(result, 0, Qt.AlignTop)
+        layout.addLayout(text_col, 1)
+        return row
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.player.opgg_url:
+            QDesktopServices.openUrl(QUrl(self.player.opgg_url))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class TodayLpOverlayCard(QFrame):
+    def __init__(self, summary: TodayLpSummary, card_width: int = TODAY_CARD_MIN_WIDTH) -> None:
+        super().__init__()
+        self.summary = summary
+        self.player = summary.player
+        self._accent = self._change_accent(summary)
+
+        self._card_width = max(TODAY_CARD_MIN_WIDTH, card_width)
+        self._card_height = self._height_for_width(self._card_width)
+        self.setObjectName("TodayPlayerCard")
+        self.setFixedSize(self._card_width, self._card_height)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor if self.player.opgg_url else Qt.ArrowCursor)
+        if self.player.opgg_url:
+            self.setToolTip("Abrir perfil en OP.GG")
+
+        self._background_label = QLabel(self)
+        self._background_label.setGeometry(0, 0, self._card_width, self._card_height)
+        self._background_label.setPixmap(_build_today_card_background(self._accent, self._card_width, self._card_height))
+        self._background_label.setStyleSheet("background: transparent;")
+        self._background_label.lower()
+
+        self._delta_label = QLabel(self._delta_text(), self)
+        self._delta_label.setObjectName("TodayDeltaPill")
+        self._delta_label.setStyleSheet(self._delta_stylesheet())
+
+        self._avatar_label = QLabel(self)
+        self._avatar_label.setFixedSize(42, 42)
+        self._avatar_label.setPixmap(_load_discord_avatar(self.player))
+        self._avatar_label.setScaledContents(True)
+        self._avatar_label.setStyleSheet(
+            f"background: transparent; border-radius: 21px; border: 1px solid {self._accent};"
+        )
+
+        self._hero_panel = QFrame(self)
+        self._hero_panel.setObjectName("TodayCardHeroPanel")
+
+        self._hero_back_logo_label = QLabel(self._hero_panel)
+        self._hero_back_logo_label.setAlignment(Qt.AlignCenter)
+        self._hero_back_logo_label.setStyleSheet("background: transparent;")
+        self._hero_back_logo_label.setScaledContents(True)
+
+        self._hero_logo_label = QLabel(self._hero_panel)
+        self._hero_logo_label.setAlignment(Qt.AlignCenter)
+        self._hero_logo_label.setStyleSheet("background: transparent;")
+        self._hero_logo_label.setScaledContents(True)
+
+        self._rank_hint_label = QLabel(self._hero_panel)
+        self._rank_hint_label.setObjectName("TodayHeroRankHint")
+        self._rank_hint_label.setAlignment(Qt.AlignCenter)
+
+        self._footer = QFrame(self)
+        self._footer.setObjectName("TodayCardInfoPanel")
+        footer_layout = QVBoxLayout(self._footer)
+        footer_layout.setContentsMargins(14, 12, 14, 12)
+        footer_layout.setSpacing(4)
+
+        name_label = QLabel(summary.riot_id)
+        name_label.setObjectName("TodayCardName")
+        name_label.setWordWrap(True)
+
+        current_label = QLabel(self._current_status_text())
+        current_label.setObjectName("TodayCardCurrent")
+        current_label.setWordWrap(True)
+
+        matches_title = QLabel("ULTIMAS DE HOY")
+        matches_title.setObjectName("TodayMatchesTitle")
+        matches_title.setWordWrap(True)
+
+        footer_layout.addWidget(name_label)
+        footer_layout.addWidget(current_label)
+        footer_layout.addSpacing(2)
+        footer_layout.addWidget(matches_title)
+        if summary.today_matches:
+            for match in summary.today_matches[:2]:
+                footer_layout.addWidget(self._build_match_row(match))
+        else:
+            empty_label = QLabel("No ha jugado hoy")
+            empty_label.setObjectName("TodayCardMeta")
+            empty_label.setWordWrap(True)
+            footer_layout.addWidget(empty_label)
+
+        self._refresh_rank_logo()
+        self._layout_card_sections()
+
+    def set_card_width(self, width: int) -> None:
+        next_width = max(TODAY_CARD_MIN_WIDTH, width)
+        if next_width == self._card_width:
+            return
+        self._card_width = next_width
+        self._card_height = self._height_for_width(self._card_width)
+        self.setFixedSize(self._card_width, self._card_height)
+        self._background_label.setGeometry(0, 0, self._card_width, self._card_height)
+        self._background_label.setPixmap(_build_today_card_background(self._accent, self._card_width, self._card_height))
+        self._refresh_rank_logo()
+        self._layout_card_sections()
+
+    @staticmethod
+    def _height_for_width(width: int) -> int:
+        return max(352, int(width * 0.92))
+
+    @staticmethod
+    def _change_accent(summary: TodayLpSummary) -> str:
+        if summary.lp_change is None:
+            return "#8f99ab"
+        if summary.lp_change > 0:
+            return "#5dd296"
+        if summary.lp_change < 0:
+            return "#e16b7b"
+        return "#d8b379"
+
+    def _delta_text(self) -> str:
+        if self.summary.lp_change is None:
+            return "Sin base"
+        return self.summary.change_text
+
+    def _delta_stylesheet(self) -> str:
+        color = QColor(self._accent)
+        return (
+            f"background: rgba({color.red()}, {color.green()}, {color.blue()}, 34);"
+            f"border: 1px solid rgba({color.red()}, {color.green()}, {color.blue()}, 160);"
+            "border-radius: 14px;"
+            "padding: 8px 12px;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 11.4pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.3px;"
+            "color: #f5efe4;"
+        )
+
+    def _rank_tier(self) -> str:
+        if self.player.soloq and self.player.soloq.tier:
+            return self.player.soloq.tier
+        return ""
+
+    def _rank_badge_text(self) -> str:
+        if self.player.soloq and self.player.soloq.tier:
+            rank = f" {self.player.soloq.rank}" if self.player.soloq.rank else ""
+            return f"{self.player.soloq.tier.title()}{rank}"
+        return "Sin SoloQ"
+
+    def _current_status_text(self) -> str:
+        if self.player.soloq and self.player.soloq.tier:
+            return f"{int(self.player.soloq.league_points or 0)} LP actuales"
+        return self.summary.current_rank_text or "Sin SoloQ"
+
+    def _rank_hint_stylesheet(self) -> str:
+        tier_color = QColor(SOLOQ_TIER_COLORS.get(self._rank_tier().upper(), "#8f99ab"))
+        return (
+            "background: transparent;"
+            "border: none;"
+            "padding: 0;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 8.8pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.8px;"
+            f"color: rgba({tier_color.red()}, {tier_color.green()}, {tier_color.blue()}, 185);"
+        )
+
+    def _refresh_rank_logo(self) -> None:
+        self._rank_hint_label.setText(self._rank_badge_text())
+        self._rank_hint_label.setStyleSheet(self._rank_hint_stylesheet())
+
+        logo = _build_today_elo_logo(
+            self._rank_tier(),
+            max(196, self._card_width - 44),
+            max(118, int(self._card_height * 0.30)),
+        )
+        if logo is not None and not logo.isNull():
+            self._hero_back_logo_label.setPixmap(_set_pixmap_opacity(_soft_blur_pixmap(logo, scale_factor=0.18), 0.26))
+            self._hero_logo_label.setPixmap(_set_pixmap_opacity(logo, 0.54))
+            self._hero_logo_label.setText("")
+            self._hero_logo_label.setStyleSheet("background: transparent;")
+            return
+
+        self._hero_back_logo_label.setPixmap(QPixmap())
+        self._hero_logo_label.setPixmap(QPixmap())
+        self._hero_logo_label.setText("Sin SoloQ")
+        self._hero_logo_label.setStyleSheet(
+            "background: transparent;"
+            "color: rgba(217, 199, 164, 170);"
+            "font-family: 'Bahnschrift';"
+            "font-size: 12pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.4px;"
+        )
+
+    def _layout_card_sections(self) -> None:
+        outer_margin = 16
+        top_y = outer_margin
+
+        self._delta_label.adjustSize()
+        delta_size = self._delta_label.sizeHint()
+        self._delta_label.setGeometry(outer_margin, top_y, max(80, delta_size.width()), max(30, delta_size.height()))
+        self._avatar_label.setGeometry(self._card_width - outer_margin - 42, top_y, 42, 42)
+
+        body_top = top_y + 42 + 10
+        footer_width = self._card_width - (outer_margin * 2) + 6
+        self._footer.resize(footer_width, 10)
+        self._footer.layout().activate()
+        footer_height = min(
+            self._card_height - body_top - outer_margin,
+            max(116, self._footer.sizeHint().height()),
+        )
+        footer_y = self._card_height - outer_margin - footer_height
+        self._footer.setGeometry(outer_margin - 3, footer_y, footer_width, footer_height)
+
+        overlap = 36 if self.summary.today_matches else 10
+        hero_x = 8
+        hero_y = body_top
+        hero_width = self._card_width - (hero_x * 2)
+        hero_height = max(170, footer_y - hero_y + overlap)
+        self._hero_panel.setGeometry(hero_x, hero_y, hero_width, hero_height)
+
+        back_width = int(hero_width * 0.96)
+        back_height = int(hero_height * 0.94)
+        self._hero_back_logo_label.setGeometry(
+            (hero_width - back_width) // 2,
+            max(4, int(hero_height * 0.01)),
+            back_width,
+            back_height,
+        )
+
+        logo_width = int(hero_width * 0.82)
+        logo_height = int(hero_height * 0.62)
+        self._hero_logo_label.setGeometry(
+            (hero_width - logo_width) // 2,
+            max(18, int(hero_height * 0.16)),
+            logo_width,
+            logo_height,
+        )
+
+        self._rank_hint_label.adjustSize()
+        rank_size = self._rank_hint_label.sizeHint()
+        self._rank_hint_label.setGeometry(
+            (hero_width - rank_size.width()) // 2,
+            hero_height - rank_size.height() - 18,
+            rank_size.width(),
+            rank_size.height(),
+        )
+
+        self._hero_panel.raise_()
+        self._footer.raise_()
+        self._delta_label.raise_()
+        self._avatar_label.raise_()
+
+    def _build_match_row(self, match) -> QFrame:
+        row = QFrame()
+        row.setObjectName("TodayMatchRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
+
+        result = QLabel("W" if match.won else "L")
+        result.setAlignment(Qt.AlignCenter)
+        badge_color = "#5dd296" if match.won else "#e16b7b"
+        color = QColor(badge_color)
+        result.setStyleSheet(
+            f"background: rgba({color.red()}, {color.green()}, {color.blue()}, 34);"
+            f"border: 1px solid rgba({color.red()}, {color.green()}, {color.blue()}, 160);"
+            "border-radius: 10px;"
+            "padding: 4px 8px;"
+            "font-family: 'Bahnschrift';"
+            "font-size: 8.8pt;"
+            "font-weight: 700;"
+            "color: #f5efe4;"
+        )
+        result.setFixedWidth(28)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+
+        champion_name = match.champion or "Partida"
+        champion_label = QLabel(champion_name)
+        champion_label.setObjectName("TodayMatchChampion")
+        champion_label.setWordWrap(True)
+
+        meta_parts = [f"{match.kills}/{match.deaths}/{match.assists}"]
+        if match.played_at_text:
+            meta_parts.append(match.played_at_text)
+        meta_label = QLabel(" · ".join(meta_parts))
+        meta_label.setObjectName("TodayMatchMeta")
+        meta_label.setWordWrap(True)
+
+        text_col.addWidget(champion_label)
+        text_col.addWidget(meta_label)
+
+        layout.addWidget(result, 0, Qt.AlignTop)
+        layout.addLayout(text_col, 1)
+        return row
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.player.opgg_url:
+            QDesktopServices.openUrl(QUrl(self.player.opgg_url))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class _LegacyLiveGameRow(QFrame):
     def __init__(self, summary: LiveGameParticipantSummary) -> None:
         super().__init__()
         self.setObjectName("Card")
@@ -2450,7 +3642,7 @@ class LiveGameRow(QFrame):
         return frame
 
 
-class LiveGamePlayerDetailRow(QFrame):
+class _LegacyLiveGamePlayerDetailRow(QFrame):
     def __init__(self, participant: LiveGamePlayerDetails) -> None:
         super().__init__()
         self.setObjectName("Card")
@@ -2573,20 +3765,376 @@ class LiveGamePlayerDetailRow(QFrame):
             root.addWidget(tags)
 
 
+class LiveMetaChip(QFrame):
+    def __init__(self, label: str, value: str, accent: str) -> None:
+        super().__init__()
+        self.setObjectName("LiveMetaChip")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(2)
+
+        value_label = QLabel(value)
+        value_label.setObjectName("LiveMetaValue")
+        value_label.setStyleSheet(f"color: {accent};")
+        value_label.setWordWrap(True)
+
+        label_widget = QLabel(label)
+        label_widget.setObjectName("LiveMetaLabel")
+        label_widget.setWordWrap(True)
+
+        layout.addWidget(value_label)
+        layout.addWidget(label_widget)
+
+
+class LiveGameRow(QFrame):
+    def __init__(self, summary: LiveGameParticipantSummary) -> None:
+        super().__init__()
+        self.summary = summary
+        self.setObjectName("LiveMatchCard")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(16)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(16)
+
+        icon_shell = QFrame()
+        icon_shell.setObjectName("LiveMatchIconShell")
+        icon_shell.setFixedSize(72, 72)
+
+        icon_label = QLabel(icon_shell)
+        icon_label.setGeometry(8, 8, CHAMPION_ICON_SIZE, CHAMPION_ICON_SIZE)
+        icon_label.setStyleSheet("background: transparent;")
+        if summary.champion_id > 0:
+            icon_label.setPixmap(_load_champion_icon(summary.champion_id))
+            icon_label.setScaledContents(True)
+        else:
+            icon_label.setObjectName("LivePlaceholderGlyph")
+            icon_label.setAlignment(Qt.AlignCenter)
+            icon_label.setText("LIVE")
+
+        if summary.role in LIVE_ROLE_PRIORITY:
+            role_container = QLabel(icon_shell)
+            role_container.setGeometry(48, 48, 24, 24)
+            role_container.setStyleSheet(
+                "background: #0b1528; border: 1px solid #22304d; border-radius: 12px; padding: 1px;"
+            )
+            role_label = QLabel(role_container)
+            role_label.setGeometry(1, 1, 22, 22)
+            role_label.setPixmap(_load_role_icon(summary.role))
+            role_label.setScaledContents(True)
+            role_label.setStyleSheet("background: transparent;")
+            role_container.setToolTip(summary.role)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(4)
+
+        eyebrow = QLabel("LIVE TRACKING")
+        eyebrow.setObjectName("LiveMatchEyebrow")
+
+        riot_id = f"{summary.game_name}#{summary.tag_line}" if summary.tag_line else summary.game_name
+        title_label = QLabel(riot_id)
+        title_label.setObjectName("LiveMatchTitle")
+        title_label.setWordWrap(True)
+
+        detail_label = QLabel(summary.status_text or "Partida activa")
+        detail_label.setObjectName("LiveMatchDetail")
+        detail_label.setWordWrap(True)
+
+        support_parts: list[str] = []
+        if summary.mastery_level is not None:
+            support_parts.append(f"Maestria M{summary.mastery_level}")
+        support_label = QLabel(" · ".join(support_parts))
+        support_label.setObjectName("Muted")
+        support_label.setWordWrap(True)
+
+        text_col.addWidget(eyebrow)
+        text_col.addWidget(title_label)
+        text_col.addWidget(detail_label)
+        if support_parts:
+            text_col.addWidget(support_label)
+
+        header.addWidget(icon_shell, 0, Qt.AlignTop)
+        header.addLayout(text_col, 1)
+        root.addLayout(header)
+
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(10)
+        meta_row.addWidget(LiveMetaChip("Campeon", summary.champion or "Oculto", "#f0d7a2"), 1)
+        meta_row.addWidget(LiveMetaChip("Rol", _live_role_display_name(summary.role), "#7cc7ff"), 1)
+        meta_row.addWidget(
+            LiveMetaChip(
+                "Duracion",
+                f"{summary.game.duration_min} min" if summary.game and summary.game.duration_min > 0 else "N/D",
+                "#9ed07b",
+            ),
+            1,
+        )
+        meta_row.addWidget(
+            LiveMetaChip(
+                "Mapa",
+                summary.game.map_name if summary.game and summary.game.map_name else "N/D",
+                "#f58ab3",
+            ),
+            1,
+        )
+        root.addLayout(meta_row)
+
+        if summary.in_game and summary.participants:
+            toggle_button = QPushButton("Ver alineacion completa")
+            toggle_button.setObjectName("LiveDetailsButton")
+            toggle_button.setCheckable(True)
+            toggle_button.setCursor(Qt.PointingHandCursor)
+
+            details_widget = self._build_match_details(summary.participants)
+            details_widget.setVisible(False)
+
+            def _toggle_details(checked: bool) -> None:
+                toggle_button.setText("Ocultar alineacion" if checked else "Ver alineacion completa")
+                details_widget.setVisible(checked)
+
+            toggle_button.toggled.connect(_toggle_details)
+            root.addWidget(toggle_button, 0, Qt.AlignLeft)
+            root.addWidget(details_widget)
+
+    def _build_match_details(self, participants: list[LiveGamePlayerDetails]) -> QWidget:
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        blue_team = [participant for participant in participants if participant.team_color == "blue"]
+        red_team = [participant for participant in participants if participant.team_color == "red"]
+
+        layout.addWidget(self._build_team_column("Equipo Azul", blue_team, "#7cc7ff"), 1)
+        layout.addWidget(self._build_team_column("Equipo Rojo", red_team, "#ff8ea4"), 1)
+        return wrapper
+
+    def _build_team_column(self, title: str, participants: list[LiveGamePlayerDetails], accent: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("LiveTeamCard")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        slots = _live_team_slots(participants)
+        title_label = QLabel(title)
+        title_label.setObjectName("LiveTeamTitle")
+        title_label.setStyleSheet(f"color: {accent};")
+        layout.addWidget(title_label)
+        meta_parts: list[str] = []
+
+        meta_label = QLabel(" · ".join(meta_parts))
+        meta_label.setObjectName("LiveTeamMeta")
+        meta_label.setWordWrap(True)
+
+        meta_label.hide()
+
+        for role, participant in slots:
+            layout.addWidget(LiveGamePlayerDetailRow(participant, role, accent))
+        return frame
+
+
+class LiveGamePlayerDetailRow(QFrame):
+    def __init__(self, participant: LiveGamePlayerDetails | None, role_hint: str, accent: str) -> None:
+        super().__init__()
+        self.setObjectName("LivePlayerCard" if participant is not None else "LivePlayerPlaceholderCard")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(12)
+
+        icon_shell = QFrame()
+        icon_shell.setObjectName("LivePlayerIconShell")
+        icon_shell.setFixedSize(58, 58)
+
+        display_role = participant.role if participant is not None and participant.role != "UNKNOWN" else role_hint
+        if participant is not None:
+            champion_icon = QLabel(icon_shell)
+            champion_icon.setGeometry(7, 7, DETAIL_CHAMPION_ICON_SIZE, DETAIL_CHAMPION_ICON_SIZE)
+            champion_icon.setPixmap(_load_champion_icon(participant.champion_id))
+            champion_icon.setScaledContents(True)
+            champion_icon.setStyleSheet("background: transparent; border-radius: 10px;")
+
+            if display_role in LIVE_ROLE_PRIORITY:
+                role_container = QLabel(icon_shell)
+                role_container.setGeometry(38, 38, 20, 20)
+                role_container.setStyleSheet(
+                    "background: #0b1528; border: 1px solid #22304d; border-radius: 10px; padding: 1px;"
+                )
+                role_icon = QLabel(role_container)
+                role_icon.setGeometry(1, 1, 18, 18)
+                role_icon.setPixmap(_load_role_icon(display_role))
+                role_icon.setScaledContents(True)
+                role_icon.setStyleSheet("background: transparent;")
+                role_container.setToolTip(display_role)
+        else:
+            placeholder_icon = QLabel(icon_shell)
+            placeholder_icon.setGeometry(13, 13, 32, 32)
+            placeholder_icon.setAlignment(Qt.AlignCenter)
+            if display_role in LIVE_ROLE_PRIORITY:
+                placeholder_icon.setPixmap(
+                    _load_role_icon(display_role).scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+                placeholder_icon.setScaledContents(True)
+            else:
+                placeholder_icon.setObjectName("LivePlaceholderGlyph")
+                placeholder_icon.setText("--")
+
+        info_col = QVBoxLayout()
+        info_col.setContentsMargins(0, 0, 0, 0)
+        info_col.setSpacing(5)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+
+        role_pill = QLabel(_live_role_display_name(display_role))
+        role_pill.setObjectName("LiveRolePill")
+        accent_color = QColor(accent)
+        role_pill.setStyleSheet(
+            f"background: rgba({accent_color.red()}, {accent_color.green()}, {accent_color.blue()}, 26);"
+            f"border: 1px solid rgba({accent_color.red()}, {accent_color.green()}, {accent_color.blue()}, 120);"
+            f"border-radius: 10px; padding: 4px 8px; color: {accent};"
+            "font-family: 'Bahnschrift';"
+            "font-size: 8.2pt;"
+            "font-weight: 700;"
+            "letter-spacing: 0.6px;"
+        )
+
+        if participant is not None:
+            header = QLabel(
+                f"{participant.game_name}#{participant.tag_line}"
+                if participant.tag_line
+                else participant.game_name
+            )
+            header.setObjectName("LivePlayerName")
+
+            subheader_parts = [participant.champion or "Campeon no detectado"]
+            if participant.champion_rank:
+                subheader_parts.append(participant.champion_rank)
+            subheader = QLabel(" · ".join(subheader_parts))
+            subheader.setObjectName("LivePlayerMeta")
+            subheader.setWordWrap(True)
+
+            spell_row = QHBoxLayout()
+            spell_row.setContentsMargins(0, 0, 0, 0)
+            spell_row.setSpacing(6)
+
+            for index, spell_id in enumerate(participant.spell_ids[:2]):
+                spell_icon = QLabel()
+                spell_icon.setFixedSize(DETAIL_SPELL_ICON_SIZE, DETAIL_SPELL_ICON_SIZE)
+                spell_icon.setPixmap(_load_summoner_spell_icon(spell_id))
+                spell_icon.setScaledContents(True)
+                if index < len(participant.spell_names):
+                    spell_icon.setToolTip(participant.spell_names[index])
+                spell_row.addWidget(spell_icon, 0, Qt.AlignVCenter)
+            spell_row.addStretch(1)
+
+            title_row.addWidget(header, 1)
+            title_row.addWidget(role_pill, 0, Qt.AlignTop)
+
+            info_col.addLayout(title_row)
+            info_col.addWidget(subheader)
+            info_col.addLayout(spell_row)
+
+            stats_col = QVBoxLayout()
+            stats_col.setContentsMargins(0, 0, 0, 0)
+            stats_col.setSpacing(4)
+
+            primary_stats = []
+            if participant.recent_winrate is not None and participant.recent_games is not None:
+                primary_stats.append(f"{participant.recent_winrate:.0f}% WR · {participant.recent_games}p")
+            if participant.avg_kda:
+                primary_stats.append(f"KDA {participant.avg_kda}")
+
+            secondary_stats = []
+            if participant.summoner_level > 0:
+                secondary_stats.append(f"Nivel {participant.summoner_level}")
+            if participant.mastery_level is not None:
+                secondary_stats.append(f"M{participant.mastery_level}")
+            if participant.champion_rank:
+                secondary_stats.append(participant.champion_rank)
+
+            primary_label = QLabel(" · ".join(primary_stats) if primary_stats else "Sin estadisticas recientes")
+            primary_label.setObjectName("LivePlayerPrimary")
+            primary_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            primary_label.setWordWrap(True)
+
+            secondary_label = QLabel(" · ".join(secondary_stats) if secondary_stats else "Sin datos extra")
+            secondary_label.setObjectName("LivePlayerMeta")
+            secondary_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            secondary_label.setWordWrap(True)
+
+            stats_col.addWidget(primary_label)
+            stats_col.addWidget(secondary_label)
+            stats_col.addStretch(1)
+
+            top_row.addWidget(icon_shell, 0, Qt.AlignTop)
+            top_row.addLayout(info_col, 1)
+            top_row.addLayout(stats_col, 0)
+            root.addLayout(top_row)
+
+            if participant.tags:
+                tags = QLabel(" · ".join(participant.tags))
+                tags.setObjectName("LivePlayerTag")
+                tags.setWordWrap(True)
+                root.addWidget(tags)
+            return
+
+        header = QLabel("Invocador oculto")
+        header.setObjectName("LivePlayerName")
+
+        subheader = QLabel("Modo streamer o fuente incompleta")
+        subheader.setObjectName("LivePlayerMeta")
+        subheader.setWordWrap(True)
+
+        note = QLabel("Hueco reservado para mantener la composicion del equipo.")
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+
+        title_row.addWidget(header, 1)
+        title_row.addWidget(role_pill, 0, Qt.AlignTop)
+
+        info_col.addLayout(title_row)
+        info_col.addWidget(subheader)
+        info_col.addWidget(note)
+
+        top_row.addWidget(icon_shell, 0, Qt.AlignTop)
+        top_row.addLayout(info_col, 1)
+        root.addLayout(top_row)
+
+
 class BuildSearchResultRow(QFrame):
     def __init__(self, champion: LolalyticsChampion, open_callback) -> None:
         super().__init__()
         self._icon_url = champion.icon_url
         self._icon_size = BUILDS_RESULT_ICON_SIZE
-        self.setObjectName("Card")
+        self.setObjectName("BuildSearchResultCard")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
         self._icon_refresh_attempts = 0
         self._icon_refresh_timer = QTimer(self)
         self._icon_refresh_timer.setInterval(180)
         self._icon_refresh_timer.timeout.connect(self._refresh_icon)
+
+        icon_shell = QFrame()
+        icon_shell.setObjectName("BuildResultIconShell")
+        icon_shell.setFixedSize(self._icon_size + 14, self._icon_size + 14)
+        icon_shell_layout = QVBoxLayout(icon_shell)
+        icon_shell_layout.setContentsMargins(7, 7, 7, 7)
+        icon_shell_layout.setSpacing(0)
 
         self._icon_label = QLabel()
         self._icon_label.setFixedSize(self._icon_size, self._icon_size)
@@ -2594,23 +4142,26 @@ class BuildSearchResultRow(QFrame):
         self._refresh_icon()
         if self._icon_url and self._icon_url not in _REMOTE_IMAGE_BYTES_CACHE:
             self._icon_refresh_timer.start()
+        icon_shell_layout.addWidget(self._icon_label, 0, Qt.AlignCenter)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(4)
 
         name = QLabel(champion.name)
-        name.setStyleSheet("font-size: 12pt; font-weight: 700;")
+        name.setObjectName("BuildSearchResultName")
         meta = QLabel(f"{champion.slug} · Lolalytics")
-        meta.setObjectName("Muted")
+        meta.setObjectName("BuildSearchResultMeta")
+        meta.setText(f"{champion.slug} / Lolalytics")
 
         text_col.addWidget(name)
         text_col.addWidget(meta)
 
         button = QPushButton("Ver build")
+        button.setObjectName("BuildInlineButton")
         button.clicked.connect(lambda checked=False: open_callback(champion))
 
-        layout.addWidget(self._icon_label, 0, Qt.AlignVCenter)
+        layout.addWidget(icon_shell, 0, Qt.AlignVCenter)
         layout.addLayout(text_col, 1)
         layout.addWidget(button)
 
@@ -2671,13 +4222,14 @@ class BuildAssetCard(QFrame):
         empty_text: str = "Sin datos",
     ) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildPanelCard")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"font-size: 11pt; font-weight: 700; color: {accent};")
+        title_label.setObjectName("BuildPanelTitle")
+        title_label.setStyleSheet(f"color: {accent};")
         layout.addWidget(title_label)
 
         if not assets:
@@ -2714,13 +4266,14 @@ class BuildSectionCard(QFrame):
         accent: str = "#7cc7ff",
     ) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildPanelCard")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"font-size: 11pt; font-weight: 700; color: {accent};")
+        title_label.setObjectName("BuildPanelTitle")
+        title_label.setStyleSheet(f"color: {accent};")
         body = QLabel("\n".join(lines) if lines else "Sin datos")
         body.setWordWrap(True)
         body.setStyleSheet("color: #e7edf6;")
@@ -2737,7 +4290,7 @@ class BuildSectionCard(QFrame):
 class BuildItemOptionWidget(QFrame):
     def __init__(self, option: LolalyticsBuildSection, accent: str) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildOptionCard")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
@@ -2755,11 +4308,12 @@ class BuildItemOptionWidget(QFrame):
 
         win_rate = QLabel(self._format_percent(option.win_rate))
         win_rate.setAlignment(Qt.AlignCenter)
+        win_rate.setObjectName("BuildOptionStat")
         win_rate.setStyleSheet(f"font-weight: 700; color: {accent};")
 
         games = QLabel(self._format_count(option.games))
         games.setAlignment(Qt.AlignCenter)
-        games.setObjectName("Muted")
+        games.setObjectName("BuildOptionMeta")
 
         layout.addWidget(win_rate)
         layout.addWidget(games)
@@ -2776,13 +4330,14 @@ class BuildItemOptionWidget(QFrame):
 class BuildItemOptionsCard(QFrame):
     def __init__(self, title: str, options: list[LolalyticsBuildSection], accent: str) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildPanelCard")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"font-size: 11pt; font-weight: 700; color: {accent};")
+        title_label.setObjectName("BuildPanelTitle")
+        title_label.setStyleSheet(f"color: {accent};")
         layout.addWidget(title_label)
 
         if not options:
@@ -2799,7 +4354,7 @@ class BuildItemOptionsCard(QFrame):
             row.addWidget(BuildItemOptionWidget(option, accent))
             if index < len(options) - 1:
                 or_label = QLabel("OR")
-                or_label.setStyleSheet("font-weight: 700; color: #9aa9be;")
+                or_label.setObjectName("BuildSearchResultMeta")
                 row.addWidget(or_label, 0, Qt.AlignVCenter)
         row.addStretch(1)
         layout.addLayout(row)
@@ -2814,13 +4369,14 @@ class BuildSkillOrderCard(QFrame):
         accent: str = "#7cc7ff",
     ) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildPanelCard")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
         title_label = QLabel("Skill Order")
-        title_label.setStyleSheet(f"font-size: 11pt; font-weight: 700; color: {accent};")
+        title_label.setObjectName("BuildPanelTitle")
+        title_label.setStyleSheet(f"color: {accent};")
         layout.addWidget(title_label)
 
         if not rows:
@@ -2868,7 +4424,7 @@ class BuildSkillOrderCard(QFrame):
 class BuildMatchupRow(QFrame):
     def __init__(self, matchup: LolalyticsMatchup, accent: str) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("BuildMatchupCard")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)
@@ -2882,9 +4438,9 @@ class BuildMatchupRow(QFrame):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(2)
         name = QLabel(matchup.champion)
-        name.setStyleSheet("font-size: 10.5pt; font-weight: 700;")
+        name.setObjectName("BuildMatchupName")
         meta = QLabel(f"{matchup.games:,} partidas")
-        meta.setObjectName("Muted")
+        meta.setObjectName("BuildMatchupMeta")
         left.addWidget(name)
         left.addWidget(meta)
 
@@ -2893,10 +4449,12 @@ class BuildMatchupRow(QFrame):
         right.setSpacing(2)
         wr = QLabel(f"{matchup.win_rate:.2f}% WR")
         wr.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        wr.setStyleSheet(f"font-weight: 700; color: {accent};")
+        wr.setObjectName("BuildMatchupStat")
+        wr.setStyleSheet(f"color: {accent};")
         delta = QLabel(f"Δ2 {matchup.delta_2:+.2f} · Δ1 {matchup.delta_1:+.2f}")
         delta.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         delta.setObjectName("Muted")
+        delta.setText(f"D2 {matchup.delta_2:+.2f} / D1 {matchup.delta_1:+.2f}")
         right.addWidget(wr)
         right.addWidget(delta)
 
@@ -2906,7 +4464,7 @@ class BuildMatchupRow(QFrame):
 
 
 class HomeHeroCard(QFrame):
-    def __init__(self, open_players, open_ranking, open_builds, open_live_games) -> None:
+    def __init__(self, open_players, open_today, open_ranking, open_builds, open_live_games) -> None:
         super().__init__()
         self.setObjectName("HomeHeroCard")
         self.setMinimumHeight(620)
@@ -2971,6 +4529,9 @@ class HomeHeroCard(QFrame):
         quick_row.setContentsMargins(0, 0, 0, 0)
         quick_row.setSpacing(12)
 
+        today_button = HomeQuickActionButton("Hoy", "LP del dia", "today")
+        today_button.clicked.connect(open_today)
+
         ranking_button = HomeQuickActionButton("Ranking", "SoloQ", "ranking")
         ranking_button.clicked.connect(open_ranking)
 
@@ -2980,6 +4541,7 @@ class HomeHeroCard(QFrame):
         live_button = HomeQuickActionButton("En partida", "Live", "live")
         live_button.clicked.connect(open_live_games)
 
+        quick_row.addWidget(today_button)
         quick_row.addWidget(ranking_button)
         quick_row.addWidget(builds_button)
         quick_row.addWidget(live_button)
@@ -3087,6 +4649,7 @@ class MainWindow(QMainWindow):
         self.worker_threads: dict[str, QThread] = {}
         self.workers: dict[str, QObject] = {}
         self.ranking_summaries: list[PlayerSummary] = []
+        self.today_summaries: list[TodayLpSummary] = []
         self.live_game_summaries: list[LiveGameParticipantSummary] = []
         self.build_champions: list[LolalyticsChampion] = []
         self.current_build_detail: LolalyticsBuildDetail | None = None
@@ -3105,6 +4668,8 @@ class MainWindow(QMainWindow):
         self.players_render_columns = 1
         self.players_render_card_width = PLAYER_CARD_MIN_WIDTH
         self.players_rendering = False
+        self.today_last_column_count = 0
+        self.today_last_card_width = 0
         self.settings_unlocked = False
         self.initial_load_started = False
         self.initial_load_pending: set[str] = set()
@@ -3119,27 +4684,29 @@ class MainWindow(QMainWindow):
         self.container = QWidget()
         self.container.setObjectName("AppCanvas")
         self.setCentralWidget(self.container)
-        root = QVBoxLayout(self.container)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(20)
-
-        root.addWidget(self._build_header())
+        self.root_layout = QVBoxLayout(self.container)
+        self.root_layout.setContentsMargins(20, 20, 20, 20)
+        self.root_layout.setSpacing(8)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_home_tab(), "Inicio")
+        self.tabs.addTab(self._build_today_tab(), "Hoy")
         self.tabs.addTab(self._build_ranking_tab(), "Ranking")
         self.tabs.addTab(self._build_players_tab(), "Jugadores")
         self.tabs.addTab(self._build_live_games_tab(), "En partida")
         self.tabs.addTab(self._build_builds_tab(), "Builds")
         self.tabs.addTab(self._build_settings_tab(), "Configuración")
         self.tabs.currentChanged.connect(self._handle_tab_changed)
-        root.addWidget(self.tabs, 1)
+        self.root_layout.addWidget(self.tabs, 1)
 
         self.loader_overlay = self._build_loader_overlay()
         self.loader_overlay.hide()
         self.loader_hide_timer = QTimer(self)
         self.loader_hide_timer.setSingleShot(True)
         self.loader_hide_timer.timeout.connect(self._handle_initial_loader_timeout)
+        self.today_resize_timer = QTimer(self)
+        self.today_resize_timer.setSingleShot(True)
+        self.today_resize_timer.timeout.connect(self._handle_today_resize_timeout)
         self.players_resize_timer = QTimer(self)
         self.players_resize_timer.setSingleShot(True)
         self.players_resize_timer.timeout.connect(self._handle_players_resize_timeout)
@@ -3234,10 +4801,12 @@ class MainWindow(QMainWindow):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setSpacing(12)
+        layout.addWidget(self._build_header())
         layout.addWidget(
             HomeHeroCard(
                 open_players=lambda checked=False: self.tabs.setCurrentIndex(PLAYERS_TAB_INDEX),
+                open_today=lambda checked=False: self.tabs.setCurrentIndex(TODAY_TAB_INDEX),
                 open_ranking=lambda checked=False: self.tabs.setCurrentIndex(RANKING_TAB_INDEX),
                 open_builds=lambda checked=False: self.tabs.setCurrentIndex(BUILDS_TAB_INDEX),
                 open_live_games=lambda checked=False: self.tabs.setCurrentIndex(LIVE_GAMES_TAB_INDEX),
@@ -3245,6 +4814,132 @@ class MainWindow(QMainWindow):
             1,
         )
         return wrapper
+
+    def _build_today_tab(self) -> QWidget:
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        controls = QFrame()
+        controls.setObjectName("TodayHeroCard")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(18, 16, 18, 16)
+        controls_layout.setSpacing(10)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(12)
+
+        info = QVBoxLayout()
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(4)
+
+        title = QLabel("Hoy")
+        title.setObjectName("TodayHeroTitle")
+        subtitle = QLabel("LP netos del grupo desde las 00:00 hasta el momento actual.")
+        subtitle.setObjectName("TodayHeroLead")
+        subtitle.setWordWrap(True)
+        subtitle.setMaximumWidth(560)
+        info.addWidget(title)
+        info.addWidget(subtitle)
+
+        self.today_button = QPushButton("Actualizar hoy")
+        self.today_button.clicked.connect(self.start_today)
+
+        self.today_status_label = QLabel("Pulsa para calcular el balance del dia.")
+        self.today_status_label.setObjectName("TodayStatusNotice")
+        self.today_status_label.setWordWrap(True)
+
+        top_row.addLayout(info, 1)
+        top_row.addWidget(self.today_button)
+        controls_layout.addLayout(top_row)
+        controls_layout.addWidget(self.today_status_label)
+
+        self.today_stack = QStackedWidget()
+        self.today_stack.addWidget(self._build_today_loading_view())
+
+        self.today_area = QScrollArea()
+        self.today_area.setWidgetResizable(True)
+        self.today_content = QWidget()
+        self.today_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.today_grid = QGridLayout(self.today_content)
+        self.today_grid.setContentsMargins(0, 0, 0, 0)
+        self.today_grid.setHorizontalSpacing(18)
+        self.today_grid.setVerticalSpacing(18)
+        self.today_grid.setAlignment(Qt.AlignTop)
+        self.today_area.setWidget(self.today_content)
+        self.today_stack.addWidget(self.today_area)
+        self.today_stack.setCurrentIndex(1)
+
+        layout.addWidget(controls)
+        layout.addWidget(self.today_stack, 1)
+        self._refresh_today_overview()
+        return wrapper
+
+    def _build_today_loading_view(self) -> QWidget:
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(24, 12, 24, 12)
+        layout.setAlignment(Qt.AlignCenter)
+
+        card = QFrame()
+        card.setObjectName("LoaderShell")
+        card.setMaximumWidth(420)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(28, 24, 28, 24)
+        card_layout.setSpacing(10)
+        card_layout.setAlignment(Qt.AlignCenter)
+
+        self.today_loader_spinner = LoaderSpinner(card)
+        self.today_loader_spinner.setFixedSize(132, 132)
+
+        title = QLabel("Calculando hoy")
+        title.setObjectName("LoaderTitle")
+        title.setAlignment(Qt.AlignCenter)
+
+        card_layout.addWidget(self.today_loader_spinner, 0, Qt.AlignCenter)
+        card_layout.addWidget(title)
+        layout.addWidget(card)
+        return wrapper
+
+    def _build_today_overview_card(self, label: str, accent: str) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setObjectName("TodayOverviewCard")
+        card.setMinimumWidth(138)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+
+        value_label = QLabel("--")
+        value_label.setObjectName("TodayOverviewValue")
+        value_label.setStyleSheet(f"color: {accent};")
+        value_label.setWordWrap(True)
+
+        text_label = QLabel(label)
+        text_label.setObjectName("TodayOverviewLabel")
+        text_label.setWordWrap(True)
+
+        layout.addWidget(value_label)
+        layout.addWidget(text_label)
+        return card, value_label
+
+    def _refresh_today_overview(self) -> None:
+        if not hasattr(self, "today_overview_values"):
+            return
+
+        configured_count = len(self._configured_players())
+        today_count = len(self.today_summaries) if self.today_summaries else configured_count
+        available = [summary.lp_change for summary in self.today_summaries if summary.lp_change is not None]
+        positive = sum(1 for change in available if change > 0)
+        best = max(available) if available else None
+        lowest = min(available) if available else None
+
+        self.today_overview_values["players"].setText(str(today_count))
+        self.today_overview_values["positive"].setText(str(positive))
+        self.today_overview_values["best"].setText(self._format_lp_delta(best))
+        self.today_overview_values["lowest"].setText(self._format_lp_delta(lowest))
 
     def _build_loader_overlay(self) -> QFrame:
         overlay = QFrame(self.container)
@@ -3273,6 +4968,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Cargando datos iniciales")
         title.setObjectName("LoaderTitle")
         title.setAlignment(Qt.AlignCenter)
+        title.setText("Cargando ranking")
         title.setWordWrap(True)
         title.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         title.setAutoFillBackground(False)
@@ -3315,25 +5011,28 @@ class MainWindow(QMainWindow):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
+        layout.setSpacing(12)
 
         controls = QFrame()
         controls.setObjectName("RankingHeroCard")
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(24, 22, 24, 22)
-        controls_layout.setSpacing(16)
+        controls_layout.setContentsMargins(18, 16, 18, 16)
+        controls_layout.setSpacing(10)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(16)
+        top_row.setSpacing(12)
 
         info = QVBoxLayout()
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(4)
         title = QLabel("Ranking SoloQ")
         title.setObjectName("RankingHeroTitle")
         subtitle = QLabel("Clasificación de los jugadores configurados por elo de SoloQ.")
-        subtitle.setText("La tabla principal del grupo para seguir elo, MMR y ritmo de partidas.")
+        subtitle.setText("Sigue elo, LP y MMR del grupo.")
         subtitle.setObjectName("RankingHeroLead")
         subtitle.setWordWrap(True)
+        subtitle.setMaximumWidth(520)
         info.addWidget(title)
         info.addWidget(subtitle)
 
@@ -3351,7 +5050,7 @@ class MainWindow(QMainWindow):
 
         overview_row = QHBoxLayout()
         overview_row.setContentsMargins(0, 0, 0, 0)
-        overview_row.setSpacing(10)
+        overview_row.setSpacing(8)
 
         self.ranking_overview_values: dict[str, QLabel] = {}
         for key, label, accent in (
@@ -3401,6 +5100,126 @@ class MainWindow(QMainWindow):
         layout.addWidget(text_label)
         return card, value_label
 
+    def _build_live_overview_card(self, label: str, accent: str) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setObjectName("LiveOverviewCard")
+        card.setMinimumWidth(138)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+
+        value_label = QLabel("--")
+        value_label.setObjectName("LiveOverviewValue")
+        value_label.setStyleSheet(f"color: {accent};")
+        value_label.setWordWrap(True)
+
+        text_label = QLabel(label)
+        text_label.setObjectName("LiveOverviewLabel")
+        text_label.setWordWrap(True)
+
+        layout.addWidget(value_label)
+        layout.addWidget(text_label)
+        return card, value_label
+
+    def _refresh_live_games_overview(self, summaries: list[LiveGameParticipantSummary] | None = None) -> None:
+        if not hasattr(self, "live_games_overview_values"):
+            return
+
+        configured_count = len(self._configured_players())
+        if summaries is None:
+            total_count = configured_count
+            in_game_summaries = list(self.live_game_summaries)
+        else:
+            total_count = len(summaries)
+            in_game_summaries = [summary for summary in summaries if summary.in_game]
+
+        self.live_games_overview_values["tracked"].setText(str(total_count))
+        self.live_games_overview_values["live"].setText(str(len(in_game_summaries)))
+
+    def _build_players_overview_card(self, label: str, accent: str) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setObjectName("PlayersOverviewCard")
+        card.setMinimumWidth(138)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+
+        value_label = QLabel("--")
+        value_label.setObjectName("PlayersOverviewValue")
+        value_label.setStyleSheet(f"color: {accent};")
+        value_label.setWordWrap(True)
+
+        text_label = QLabel(label)
+        text_label.setObjectName("PlayersOverviewLabel")
+        text_label.setWordWrap(True)
+
+        layout.addWidget(value_label)
+        layout.addWidget(text_label)
+        return card, value_label
+
+    def _refresh_players_overview(self) -> None:
+        if not hasattr(self, "players_overview_values"):
+            return
+
+        configured_count = len(self._configured_players())
+        gallery_count = len(self.ranking_summaries)
+        mastery_ready = sum(1 for summary in self.ranking_summaries if summary.top_mastery_champion_id > 0)
+
+        self.players_overview_values["tracked"].setText(str(configured_count))
+        self.players_overview_values["gallery"].setText(str(gallery_count if gallery_count else configured_count))
+        self.players_overview_values["mastery"].setText(str(mastery_ready))
+
+    def _refresh_group_room(self, full_render: bool = False) -> None:
+        del full_render
+        self._refresh_today_overview()
+        self._refresh_ranking_overview()
+        self._refresh_players_overview()
+        self._refresh_live_games_overview()
+
+    def _build_builds_overview_card(self, label: str, accent: str) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setObjectName("BuildsOverviewCard")
+        card.setMinimumWidth(138)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+
+        value_label = QLabel("--")
+        value_label.setObjectName("BuildsOverviewValue")
+        value_label.setStyleSheet(f"color: {accent};")
+        value_label.setWordWrap(True)
+
+        text_label = QLabel(label)
+        text_label.setObjectName("BuildsOverviewLabel")
+        text_label.setWordWrap(True)
+
+        layout.addWidget(value_label)
+        layout.addWidget(text_label)
+        return card, value_label
+
+    def _refresh_builds_overview(self) -> None:
+        if not hasattr(self, "builds_overview_values"):
+            return
+
+        query = self.builds_search_input.text().strip().casefold() if hasattr(self, "builds_search_input") else ""
+        if self.build_champions:
+            result_count = sum(
+                1
+                for champion in self.build_champions
+                if not query or query in champion.name.casefold() or query in champion.slug.casefold()
+            )
+        else:
+            result_count = 0
+
+        detail_value = self.current_build_detail.champion if self.current_build_detail is not None else "--"
+
+        self.builds_overview_values["catalog"].setText(str(len(self.build_champions)))
+        self.builds_overview_values["results"].setText(str(result_count))
+        self.builds_overview_values["detail"].setText(detail_value)
+
     def _refresh_ranking_overview(self) -> None:
         if not hasattr(self, "ranking_overview_values"):
             return
@@ -3432,48 +5251,55 @@ class MainWindow(QMainWindow):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
+        layout.setSpacing(12)
 
         controls = QFrame()
-        controls.setObjectName("Card")
+        controls.setObjectName("PlayersHeroCard")
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(20, 18, 20, 18)
-        controls_layout.setSpacing(14)
+        controls_layout.setContentsMargins(18, 16, 18, 16)
+        controls_layout.setSpacing(10)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(16)
+        top_row.setSpacing(12)
 
         info = QVBoxLayout()
-        title = QLabel("Jugadores")
-        title.setObjectName("SectionTitle")
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(4)
+
+        title = QLabel("Galeria de jugadores")
+        title.setObjectName("PlayersHeroTitle")
         subtitle = QLabel(
             "Galería visual por cuenta basada en su campeón con más maestria y su loading screen base."
         )
-        subtitle.setObjectName("SectionLead")
+        subtitle.setObjectName("PlayersHeroLead")
         subtitle.setWordWrap(True)
+        subtitle.setText("Cada cuenta muestra su campeon principal y su maestria.")
+        subtitle.setMaximumWidth(560)
         info.addWidget(title)
         info.addWidget(subtitle)
 
         self.players_refresh_button = QPushButton("Actualizar jugadores")
         self.players_refresh_button.clicked.connect(self.start_ranking)
 
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(0)
+        right_col.setAlignment(Qt.AlignRight | Qt.AlignTop)
+
         self.players_status_label = QLabel("La galería se llenara con el ranking actual.")
-        self.players_status_label.setObjectName("InlineNotice")
+        self.players_status_label.setObjectName("PlayersStatusNotice")
         self.players_status_label.setWordWrap(True)
+        self.players_status_label.setText("La galeria se actualiza con el ranking actual.")
 
         top_row.addLayout(info, 1)
-        top_row.addWidget(self.players_refresh_button)
+        right_col.addWidget(self.players_refresh_button, 0, Qt.AlignRight)
+        top_row.addLayout(right_col)
         controls_layout.addLayout(top_row)
         controls_layout.addWidget(self.players_status_label)
 
         self.players_stack = QStackedWidget()
         self.players_stack.addWidget(self._build_players_loading_view())
-
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
 
         self.players_area = QScrollArea()
         self.players_area.setWidgetResizable(True)
@@ -3481,16 +5307,16 @@ class MainWindow(QMainWindow):
         self.players_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.players_grid = QGridLayout(self.players_content)
         self.players_grid.setContentsMargins(0, 0, 0, 0)
-        self.players_grid.setHorizontalSpacing(18)
-        self.players_grid.setVerticalSpacing(18)
+        self.players_grid.setHorizontalSpacing(20)
+        self.players_grid.setVerticalSpacing(20)
         self.players_grid.setAlignment(Qt.AlignTop)
         self.players_area.setWidget(self.players_content)
-        content_layout.addWidget(self.players_area, 1)
-        self.players_stack.addWidget(content)
+        self.players_stack.addWidget(self.players_area)
         self.players_stack.setCurrentIndex(1)
 
         layout.addWidget(controls)
         layout.addWidget(self.players_stack, 1)
+        self._refresh_players_overview()
         self._render_players()
         return wrapper
 
@@ -3515,11 +5341,6 @@ class MainWindow(QMainWindow):
         title.setObjectName("LoaderTitle")
         title.setAlignment(Qt.AlignCenter)
 
-        hint = QLabel("La pestaña cambia al instante y las tarjetas se montan en segundo plano.")
-        hint.setObjectName("LoaderHint")
-        hint.setAlignment(Qt.AlignCenter)
-        hint.setWordWrap(True)
-
         card_layout.addWidget(self.players_loader_spinner, 0, Qt.AlignCenter)
         card_layout.addWidget(title)
         layout.addWidget(card)
@@ -3529,36 +5350,67 @@ class MainWindow(QMainWindow):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
+        layout.setSpacing(12)
 
         controls = QFrame()
-        controls.setObjectName("Card")
+        controls.setObjectName("LiveHeroCard")
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(20, 18, 20, 18)
-        controls_layout.setSpacing(14)
+        controls_layout.setContentsMargins(18, 16, 18, 16)
+        controls_layout.setSpacing(10)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(16)
+        top_row.setSpacing(12)
 
         info = QVBoxLayout()
-        title = QLabel("Jugadores en partida")
-        title.setObjectName("SectionTitle")
-        subtitle = QLabel("Comprueba si los jugadores por defecto estan jugando ahora mismo.")
-        subtitle.setObjectName("SectionLead")
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(4)
+
+        title = QLabel("Radar de partidas")
+        title.setObjectName("LiveHeroTitle")
+
+        subtitle = QLabel(
+            "Consulta quien esta jugando ahora y revisa la composicion de cada partida incluso con streamer mode."
+        )
+        subtitle.setObjectName("LiveHeroLead")
+        subtitle.setWordWrap(True)
+        subtitle.setText("Comprueba quien esta jugando y revisa la alineacion.")
+        subtitle.setMaximumWidth(560)
+
         info.addWidget(title)
         info.addWidget(subtitle)
 
         self.live_games_button = QPushButton("Actualizar partidas")
         self.live_games_button.clicked.connect(self.start_live_games)
 
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(0)
+        right_col.setAlignment(Qt.AlignRight | Qt.AlignTop)
+
         self.live_games_status_label = QLabel("Pulsa para buscar partidas activas.")
-        self.live_games_status_label.setObjectName("InlineNotice")
+        self.live_games_status_label.setObjectName("LiveStatusNotice")
         self.live_games_status_label.setWordWrap(True)
 
         top_row.addLayout(info, 1)
-        top_row.addWidget(self.live_games_button)
+        right_col.addWidget(self.live_games_button, 0, Qt.AlignRight)
+        top_row.addLayout(right_col)
         controls_layout.addLayout(top_row)
+
+        overview_row = QHBoxLayout()
+        overview_row.setContentsMargins(0, 0, 0, 0)
+        overview_row.setSpacing(8)
+
+        self.live_games_overview_values: dict[str, QLabel] = {}
+        for key, label, accent in (
+            ("tracked", "Configurados", "#f1eadf"),
+            ("live", "En vivo", "#d8b379"),
+        ):
+            card, value_label = self._build_live_overview_card(label, accent)
+            self.live_games_overview_values[key] = value_label
+            overview_row.addWidget(card, 1)
+
+        controls_layout.addLayout(overview_row)
         controls_layout.addWidget(self.live_games_status_label)
 
         self.live_games_area = QScrollArea()
@@ -3566,11 +5418,12 @@ class MainWindow(QMainWindow):
         self.live_games_content = QWidget()
         self.live_games_layout = QVBoxLayout(self.live_games_content)
         self.live_games_layout.setContentsMargins(0, 0, 0, 0)
-        self.live_games_layout.setSpacing(12)
+        self.live_games_layout.setSpacing(16)
         self.live_games_area.setWidget(self.live_games_content)
 
         layout.addWidget(controls)
         layout.addWidget(self.live_games_area, 1)
+        self._refresh_live_games_overview()
         return wrapper
 
     def _build_builds_tab(self) -> QWidget:
@@ -3580,21 +5433,26 @@ class MainWindow(QMainWindow):
         layout.setSpacing(18)
 
         controls = QFrame()
-        controls.setObjectName("Card")
+        controls.setObjectName("BuildsHeroCard")
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(20, 18, 20, 18)
-        controls_layout.setSpacing(14)
+        controls_layout.setContentsMargins(18, 16, 18, 16)
+        controls_layout.setSpacing(10)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(12)
 
         info = QVBoxLayout()
-        title = QLabel("Builds y Matchups")
-        title.setObjectName("SectionTitle")
-        subtitle = QLabel("Buscador de campeones con build optima y matchups desde Lolalytics.")
-        subtitle.setObjectName("SectionLead")
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(4)
+
+        title = QLabel("Builds y matchups")
+        title.setObjectName("BuildsHeroTitle")
+        subtitle = QLabel("Explora campeones, builds optimas y counters en una sola vista.")
+        subtitle.setObjectName("BuildsHeroLead")
         subtitle.setWordWrap(True)
+        subtitle.setText("Busca campeones y abre build o counters sin perder sitio.")
+        subtitle.setMaximumWidth(560)
         info.addWidget(title)
         info.addWidget(subtitle)
 
@@ -3605,19 +5463,43 @@ class MainWindow(QMainWindow):
         self.builds_refresh_button = QPushButton("Actualizar Builds")
         self.builds_refresh_button.clicked.connect(self._handle_builds_refresh_clicked)
 
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(6)
+        right_col.setAlignment(Qt.AlignRight | Qt.AlignTop)
+
         top_row.addLayout(info, 1)
-        top_row.addWidget(self.builds_back_button)
-        top_row.addWidget(self.builds_refresh_button)
+        right_col.addWidget(self.builds_back_button, 0, Qt.AlignRight)
+        right_col.addWidget(self.builds_refresh_button, 0, Qt.AlignRight)
+        top_row.addLayout(right_col)
 
         self.builds_search_input = QLineEdit()
+        self.builds_search_input.setObjectName("BuildsSearchInput")
         self.builds_search_input.setPlaceholderText("Busca un campeón...")
         self.builds_search_input.textChanged.connect(self._filter_builds_results)
+        self.builds_search_input.setPlaceholderText("Busca un campeon...")
 
         self.builds_status_label = QLabel("Abre la pestaña para cargar el catálogo de campeones.")
-        self.builds_status_label.setObjectName("InlineNotice")
+        self.builds_status_label.setObjectName("BuildsStatusNotice")
         self.builds_status_label.setWordWrap(True)
+        self.builds_status_label.setText("Abre la pestana para cargar el catalogo de campeones.")
 
         controls_layout.addLayout(top_row)
+        overview_row = QHBoxLayout()
+        overview_row.setContentsMargins(0, 0, 0, 0)
+        overview_row.setSpacing(8)
+
+        self.builds_overview_values: dict[str, QLabel] = {}
+        for key, label, accent in (
+            ("catalog", "Catalogo", "#f1eadf"),
+            ("results", "Resultados", "#d8b379"),
+            ("detail", "Ultimo detalle", "#8fb9a6"),
+        ):
+            card, value_label = self._build_builds_overview_card(label, accent)
+            self.builds_overview_values[key] = value_label
+            overview_row.addWidget(card, 1)
+
+        controls_layout.addLayout(overview_row)
         controls_layout.addWidget(self.builds_search_input)
         controls_layout.addWidget(self.builds_status_label)
 
@@ -3628,6 +5510,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(controls)
         layout.addWidget(self.builds_stack, 1)
+        self._refresh_builds_overview()
         return wrapper
 
     def _build_builds_results_view(self) -> QWidget:
@@ -3907,13 +5790,20 @@ class MainWindow(QMainWindow):
         self.config.lol_game_path = self.settings_lol_game_path_input.text().strip()
         self.config.ranking_players = players
         save_config(self.config)
+        self._refresh_players_overview()
+        self._refresh_live_games_overview()
 
         self.settings_editor_status.setText(f"Configuración guardada. {len(players)} jugadores cargados.")
+        self.today_status_label.setText("Configuración actualizada. Pulsa para recalcular Hoy.")
         self.ranking_status_label.setText("Configuración actualizada. Pulsa para refrescar el ranking.")
         self.players_status_label.setText("Configuración actualizada. Pulsa para refrescar la galería.")
         self.live_games_status_label.setText("Configuración actualizada. Pulsa para refrescar partidas.")
 
     def _handle_tab_changed(self, index: int) -> None:
+        if index == TODAY_TAB_INDEX and not self.today_summaries and "today" not in self.worker_threads:
+            self._start_today(show_dialog=False, force_refresh=False)
+        if index == TODAY_TAB_INDEX and self.today_summaries:
+            QTimer.singleShot(0, self._render_today)
         if index == PLAYERS_TAB_INDEX and self.ranking_summaries:
             QTimer.singleShot(0, self._render_players)
         if index == BUILDS_TAB_INDEX and not self.builds_loaded_once and not self.builds_index_loading:
@@ -3968,6 +5858,7 @@ class MainWindow(QMainWindow):
         self.builds_refresh_button.setEnabled(True)
         self.build_champions = champions
         self._prefetch_all_builds_index_assets_async(champions)
+        self._refresh_builds_overview()
         self.builds_status_label.setText(f"Catálogo listo. {len(champions)} campeones disponibles.")
         try:
             self._filter_builds_results()
@@ -3979,6 +5870,7 @@ class MainWindow(QMainWindow):
         self.builds_index_loading = False
         self.builds_refresh_button.setEnabled(True)
         self.builds_status_label.setText(message)
+        self._refresh_builds_overview()
         self._render_build_search_results([])
         if show_dialog:
             QMessageBox.critical(self, "Error", message)
@@ -4003,6 +5895,7 @@ class MainWindow(QMainWindow):
             self.builds_status_label.setText(f"{len(filtered)} resultados para \"{self.builds_search_input.text().strip()}\".")
         else:
             self.builds_status_label.setText(f"Catálogo listo. {len(filtered)} campeones disponibles.")
+        self._refresh_builds_overview()
         self._render_build_search_results(filtered)
 
     def _append_build_search_results_batch(
@@ -4112,6 +6005,7 @@ class MainWindow(QMainWindow):
         self.builds_back_button.setEnabled(True)
         self.builds_refresh_button.setEnabled(True)
         self.builds_status_label.setText(f"Build de {detail.champion} cargada desde Lolalytics.")
+        self._refresh_builds_overview()
         try:
             self._render_build_detail(detail)
         except Exception as exc:
@@ -4125,6 +6019,7 @@ class MainWindow(QMainWindow):
         self.builds_back_button.setEnabled(True)
         self.builds_refresh_button.setEnabled(True)
         self.builds_status_label.setText(message)
+        self._refresh_builds_overview()
         if self.current_build_detail is None:
             self._show_build_search_results()
         if show_dialog:
@@ -4135,32 +6030,44 @@ class MainWindow(QMainWindow):
         self.builds_back_button.hide()
         self.builds_back_button.setEnabled(True)
         self.builds_refresh_button.setEnabled(not self.builds_index_loading and not self.build_detail_loading)
+        self._refresh_builds_overview()
 
     def _render_build_detail(self, detail: LolalyticsBuildDetail) -> None:
         self._clear_layout(self.builds_detail_layout)
 
         hero = QFrame()
-        hero.setObjectName("Card")
+        hero.setObjectName("BuildDetailHeroCard")
         hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(20, 18, 20, 18)
-        hero_layout.setSpacing(14)
+        hero_layout.setContentsMargins(24, 22, 24, 22)
+        hero_layout.setSpacing(16)
 
         hero_top = QHBoxLayout()
         hero_top.setContentsMargins(0, 0, 0, 0)
-        hero_top.setSpacing(16)
+        hero_top.setSpacing(18)
+
+        icon_shell = QFrame()
+        icon_shell.setObjectName("BuildDetailIconShell")
+        icon_shell.setFixedSize(98, 98)
+        icon_shell_layout = QVBoxLayout(icon_shell)
+        icon_shell_layout.setContentsMargins(5, 5, 5, 5)
+        icon_shell_layout.setSpacing(0)
 
         icon = QLabel()
         icon.setFixedSize(88, 88)
         icon.setPixmap(_load_remote_image(detail.icon_url, 88))
         icon.setScaledContents(True)
         icon.setStyleSheet("background: transparent;")
+        icon_shell_layout.addWidget(icon, 0, Qt.AlignCenter)
 
         info_col = QVBoxLayout()
         info_col.setContentsMargins(0, 0, 0, 0)
         info_col.setSpacing(6)
 
+        eyebrow = QLabel("LOLALYTICS DOSSIER")
+        eyebrow.setObjectName("BuildDetailEyebrow")
+
         title = QLabel(detail.champion)
-        title.setStyleSheet("font-size: 18pt; font-weight: 800;")
+        title.setObjectName("BuildDetailTitle")
 
         meta_parts = []
         if detail.role:
@@ -4172,12 +6079,15 @@ class MainWindow(QMainWindow):
         if detail.rank_label:
             meta_parts.append(f"Rank {detail.rank_label}")
         meta = QLabel(" · ".join(meta_parts) if meta_parts else "Build optima de Lolalytics")
-        meta.setObjectName("Muted")
+        meta.setObjectName("BuildDetailMeta")
+        meta.setWordWrap(True)
+        meta.setText(" / ".join(meta_parts) if meta_parts else "Build optima de Lolalytics")
 
         summary = QLabel(detail.summary or "Sin resumen disponible.")
         summary.setWordWrap(True)
-        summary.setStyleSheet("color: #d7deea;")
+        summary.setObjectName("BuildDetailSummary")
 
+        info_col.addWidget(eyebrow)
         info_col.addWidget(title)
         info_col.addWidget(meta)
         info_col.addWidget(summary)
@@ -4187,30 +6097,40 @@ class MainWindow(QMainWindow):
         actions.setSpacing(8)
         if detail.build_url:
             open_build_button = QPushButton("Abrir Build")
+            open_build_button.setObjectName("BuildInlineButton")
             open_build_button.clicked.connect(
                 lambda checked=False, url=detail.build_url: QDesktopServices.openUrl(QUrl(url))
             )
             actions.addWidget(open_build_button)
         if detail.counters_url:
             open_counters_button = QPushButton("Abrir Counters")
+            open_counters_button.setObjectName("BuildInlineButton")
             open_counters_button.clicked.connect(
                 lambda checked=False, url=detail.counters_url: QDesktopServices.openUrl(QUrl(url))
             )
             actions.addWidget(open_counters_button)
         actions.addStretch(1)
 
-        hero_top.addWidget(icon, 0, Qt.AlignTop)
+        hero_top.addWidget(icon_shell, 0, Qt.AlignTop)
         hero_top.addLayout(info_col, 1)
         hero_top.addLayout(actions)
         hero_layout.addLayout(hero_top)
 
         stats_row = QHBoxLayout()
         stats_row.setContentsMargins(0, 0, 0, 0)
-        stats_row.setSpacing(12)
-        stats_row.addWidget(StatCard("Winrate", self._format_percent(detail.win_rate), accent="#7cc7ff"))
-        stats_row.addWidget(StatCard("Pick", self._format_percent(detail.pick_rate), accent="#ffbf69"))
-        stats_row.addWidget(StatCard("Ban", self._format_percent(detail.ban_rate), accent="#f58ab3"))
-        stats_row.addWidget(StatCard("Partidas", self._format_count(detail.games), accent="#9ed07b"))
+        stats_row.setSpacing(10)
+        stats_row.addWidget(
+            StatCard("Winrate", self._format_percent(detail.win_rate), accent="#7cc7ff", style_variant="ranking")
+        )
+        stats_row.addWidget(
+            StatCard("Pick", self._format_percent(detail.pick_rate), accent="#ffbf69", style_variant="ranking")
+        )
+        stats_row.addWidget(
+            StatCard("Ban", self._format_percent(detail.ban_rate), accent="#f58ab3", style_variant="ranking")
+        )
+        stats_row.addWidget(
+            StatCard("Partidas", self._format_count(detail.games), accent="#9ed07b", style_variant="ranking")
+        )
         hero_layout.addLayout(stats_row)
 
         quick_grid = QGridLayout()
@@ -4323,18 +6243,19 @@ class MainWindow(QMainWindow):
         accent: str,
     ) -> QFrame:
         frame = QFrame()
-        frame.setObjectName("Card")
+        frame.setObjectName("BuildPanelCard")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"font-size: 12pt; font-weight: 700; color: {accent};")
+        title_label.setObjectName("BuildPanelTitle")
+        title_label.setStyleSheet(f"color: {accent};")
         layout.addWidget(title_label)
 
         if not matchups:
             empty = QLabel("Sin datos de matchup.")
-            empty.setObjectName("Muted")
+            empty.setObjectName("BuildMatchupMeta")
             layout.addWidget(empty)
         else:
             for matchup in matchups:
@@ -4350,6 +6271,47 @@ class MainWindow(QMainWindow):
     def _format_count(value: int | None) -> str:
         return f"{value:,}" if value is not None else "N/D"
 
+    @staticmethod
+    def _format_lp_delta(value: int | None) -> str:
+        if value is None:
+            return "--"
+        if value > 0:
+            return f"+{value} LP"
+        return f"{value} LP"
+
+    def start_today(self) -> None:
+        self._start_today(show_dialog=True, force_refresh=True)
+
+    def _start_today(self, show_dialog: bool, force_refresh: bool = False) -> bool:
+        if "today" in self.worker_threads:
+            return False
+
+        api_key = self.config.api_key.strip()
+        platform = self.config.default_platform
+        players = self._configured_players()
+        self._refresh_today_overview()
+        if not players:
+            self.today_status_label.setText("No hay jugadores configurados para calcular Hoy.")
+            self._refresh_group_room(full_render=True)
+            return False
+
+        self.config.api_key = api_key
+        self.config.default_platform = platform
+        save_config(self.config)
+
+        self.today_button.setEnabled(False)
+        self.today_status_label.setText("Calculando balance del día..." if force_refresh else "Cargando Hoy...")
+        if hasattr(self, "today_stack"):
+            self.today_stack.setCurrentIndex(0)
+        self._start_worker(
+            "today",
+            TodayLpWorker(api_key, platform, players, force_refresh=force_refresh),
+            self._on_today_success,
+            lambda message: self._handle_today_failed(message, show_dialog),
+            self.today_status_label,
+        )
+        return True
+
     def start_ranking(self) -> None:
         self._start_ranking(show_dialog=True, force_refresh=True)
 
@@ -4364,6 +6326,7 @@ class MainWindow(QMainWindow):
         if not players:
             self.ranking_status_label.setText("No hay jugadores configurados para el ranking.")
             self.players_status_label.setText("No hay jugadores configurados para construir la galería.")
+            self._refresh_group_room(full_render=True)
             return False
 
         self.config.api_key = api_key
@@ -4396,6 +6359,7 @@ class MainWindow(QMainWindow):
         players = self._configured_players()
         if not players:
             self.live_games_status_label.setText("No hay jugadores configurados para consultar partidas.")
+            self._refresh_group_room(full_render=True)
             return False
 
         self.config.api_key = api_key
@@ -4450,12 +6414,58 @@ class MainWindow(QMainWindow):
         if self.loader_overlay.isVisible():
             self.loader_message_label.setText(message)
 
+    def _on_today_success(self, summaries: list[TodayLpSummary]) -> None:
+        self.today_button.setEnabled(True)
+        self.today_summaries = sorted(
+            summaries,
+            key=lambda summary: (
+                summary.lp_change if summary.lp_change is not None else -10_000,
+                self._ranking_score(summary.player),
+            ),
+            reverse=True,
+        )
+        if self.today_summaries:
+            fresh_rankings = [summary.player for summary in self.today_summaries]
+            if fresh_rankings:
+                self.ranking_summaries = sorted(fresh_rankings, key=self._ranking_score, reverse=True)
+                self.players_data_version += 1
+                self.players_render_signature = None
+        self.today_last_column_count = 0
+        self.today_last_card_width = 0
+        self._refresh_today_overview()
+        self._refresh_ranking_overview()
+        self._refresh_players_overview()
+        self._render_ranking()
+        self._render_today()
+        if self.tabs.currentIndex() == PLAYERS_TAB_INDEX:
+            QTimer.singleShot(0, self._render_players)
+        timestamp = datetime.now().astimezone().strftime("%H:%M")
+        resolved = sum(1 for summary in self.today_summaries if summary.lp_change is not None)
+        self.today_status_label.setText(
+            f"Hoy actualizado. {resolved}/{len(self.today_summaries)} jugadores con referencia hasta las {timestamp}."
+        )
+        self._refresh_group_room(full_render=True)
+
+    def _on_today_failed(self, message: str) -> None:
+        self._handle_today_failed(message, show_dialog=True)
+
+    def _handle_today_failed(self, message: str, show_dialog: bool) -> None:
+        self.today_button.setEnabled(True)
+        self.today_status_label.setText(message)
+        if hasattr(self, "today_stack"):
+            self.today_stack.setCurrentIndex(1)
+        self._refresh_today_overview()
+        self._refresh_group_room(full_render=True)
+        if show_dialog:
+            QMessageBox.critical(self, "Error", message)
+
     def _on_ranking_success(self, summaries: list[PlayerSummary]) -> None:
         self.ranking_button.setEnabled(True)
         self.players_refresh_button.setEnabled(True)
         self.ranking_status_label.setText("Ranking actualizado.")
         self.ranking_summaries = sorted(summaries, key=self._ranking_score, reverse=True)
         self._refresh_ranking_overview()
+        self._refresh_players_overview()
         self.players_data_version += 1
         self.players_render_signature = None
         with _ASSET_CACHE_LOCK:
@@ -4471,7 +6481,10 @@ class MainWindow(QMainWindow):
             self.players_status_label.setText(
                 "Galería actualizada, pero falta Riot API o datos de maestria para cargar las loading screens."
             )
+        if self.today_summaries and "today" not in self.worker_threads:
+            self.today_status_label.setText("Ranking actualizado. Pulsa para recalcular Hoy.")
         self._render_ranking()
+        self._refresh_group_room(full_render=True)
         if self.tabs.currentIndex() == PLAYERS_TAB_INDEX:
             QTimer.singleShot(0, self._render_players)
         self._mark_initial_task_complete("ranking")
@@ -4484,7 +6497,11 @@ class MainWindow(QMainWindow):
         self.players_refresh_button.setEnabled(True)
         self.ranking_status_label.setText(message)
         self.players_status_label.setText(message)
+        if self.today_summaries:
+            self.today_status_label.setText("Hoy mantiene el último cálculo disponible.")
         self._refresh_ranking_overview()
+        self._refresh_players_overview()
+        self._refresh_group_room(full_render=True)
         self._mark_initial_task_complete("ranking")
         if show_dialog:
             QMessageBox.critical(self, "Error", message)
@@ -4510,7 +6527,9 @@ class MainWindow(QMainWindow):
             in_game_summaries,
             key=lambda summary: (summary.game_name.lower(), summary.tag_line.lower()),
         )
+        self._refresh_live_games_overview(summaries)
         self._render_live_games()
+        self._refresh_group_room(full_render=True)
         self._mark_initial_task_complete("live_games")
 
     def _on_live_games_failed(self, message: str) -> None:
@@ -4519,9 +6538,62 @@ class MainWindow(QMainWindow):
     def _handle_live_games_failed(self, message: str, show_dialog: bool) -> None:
         self.live_games_button.setEnabled(True)
         self.live_games_status_label.setText(message)
+        self._refresh_group_room(full_render=True)
         self._mark_initial_task_complete("live_games")
         if show_dialog:
             QMessageBox.critical(self, "Error", message)
+
+    def _render_today(self) -> None:
+        if not hasattr(self, "today_grid"):
+            return
+
+        self._clear_layout(self.today_grid)
+        if not self.today_summaries:
+            empty = QLabel("Actualiza Hoy para ver el balance diario del grupo.")
+            empty.setObjectName("Muted")
+            empty.setWordWrap(True)
+            self.today_grid.addWidget(empty, 0, 0)
+            self.today_last_column_count = 1
+            self.today_last_card_width = 0
+            if hasattr(self, "today_stack"):
+                self.today_stack.setCurrentIndex(1)
+            return
+
+        columns, card_width = self._today_layout_metrics()
+        self.today_last_column_count = columns
+        self.today_last_card_width = card_width
+
+        for index, summary in enumerate(self.today_summaries):
+            row = index // columns
+            column = index % columns
+            card = TodayLpOverlayCard(summary, card_width=card_width)
+            self.today_grid.addWidget(card, row, column, Qt.AlignTop | Qt.AlignHCenter)
+
+        for column in range(columns):
+            self.today_grid.setColumnStretch(column, 1)
+            self.today_grid.setColumnMinimumWidth(column, card_width)
+
+        if hasattr(self, "today_stack"):
+            self.today_stack.setCurrentIndex(1)
+
+    def _today_layout_metrics(self) -> tuple[int, int]:
+        viewport = self.today_area.viewport().width() if hasattr(self, "today_area") else 0
+        gap = self.today_grid.horizontalSpacing() if hasattr(self, "today_grid") else 18
+        available_width = max(viewport - 6, TODAY_CARD_MIN_WIDTH)
+        player_count = max(1, len(self.today_summaries))
+        max_fit_columns = max(1, (available_width + gap) // (TODAY_CARD_MIN_WIDTH + gap))
+        max_columns = min(3, player_count, max_fit_columns)
+        columns = 1
+        for candidate in range(max_columns, 0, -1):
+            width = (available_width - (gap * (candidate - 1))) // candidate
+            if width >= TODAY_CARD_MIN_WIDTH:
+                columns = candidate
+                break
+        card_width = max(
+            TODAY_CARD_MIN_WIDTH,
+            (available_width - (gap * (columns - 1))) // columns,
+        )
+        return columns, card_width
 
     def _render_ranking(self) -> None:
         self._clear_layout(self.ranking_layout)
@@ -4765,6 +6837,14 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_loader_geometry()
+        if hasattr(self, "today_area") and self.today_summaries:
+            columns, card_width = self._today_layout_metrics()
+            if columns != self.today_last_column_count or card_width != self.today_last_card_width:
+                if self.tabs.currentIndex() == TODAY_TAB_INDEX:
+                    self.today_resize_timer.start(90)
+                else:
+                    self.today_last_column_count = 0
+                    self.today_last_card_width = 0
         if hasattr(self, "players_area") and self.ranking_summaries:
             columns, card_width = self._players_layout_metrics()
             if columns != self.players_last_column_count or card_width != self.players_last_card_width:
@@ -4772,6 +6852,10 @@ class MainWindow(QMainWindow):
                     self.players_resize_timer.start(90)
                 else:
                     self.players_render_signature = None
+
+    def _handle_today_resize_timeout(self) -> None:
+        if self.tabs.currentIndex() == TODAY_TAB_INDEX and self.today_summaries:
+            self._render_today()
 
     def _handle_players_resize_timeout(self) -> None:
         if self.tabs.currentIndex() == PLAYERS_TAB_INDEX and self.ranking_summaries:
