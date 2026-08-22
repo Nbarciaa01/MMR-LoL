@@ -7,7 +7,7 @@
     <title>MMR LoL</title>
     <meta name="description" content="Ranking, LP diarios, partidas en vivo y builds del grupo.">
     <link rel="icon" href="/assets/mmr-logo-app.png">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=3">
   </head>
   <body>
     <header class="topbar">
@@ -45,8 +45,17 @@
     </main>
 
     <footer class="site-footer">
-      <span>MMR LoL no está respaldado por Riot Games.</span>
-      <nav><a href="/privacy">Privacidad</a><a href="/terms">Términos</a></nav>
+      <div class="footer-inner">
+        <div class="footer-product">
+          <img src="/assets/mmr-logo-app.png" alt="">
+          <div><strong>MMR LoL</strong><span>Estadísticas del grupo</span></div>
+        </div>
+        <p class="riot-disclaimer">MMR LoL no está respaldado por Riot Games y no refleja sus opiniones.</p>
+        <nav aria-label="Información legal">
+          <a href="/privacy">Privacidad</a>
+          <a href="/terms">Términos de uso</a>
+        </nav>
+      </div>
     </footer>
 
     <dialog id="settings-dialog" class="settings-dialog">
@@ -60,6 +69,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=3" defer></script>
   </body>
 </html>
