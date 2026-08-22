@@ -85,7 +85,7 @@ class StubFallbackClient(ScrapingClient):
         return (
             f"<title>{game_name}#{tag_line} - Summoner Stats</title>"
             '"summonerLevel":123'
-            '/profileicon/1.png'
+            '/profile_icons/profileIcon6484.jpg'
         )
 
     def _get_text(
@@ -308,6 +308,7 @@ class TodayLpTests(unittest.TestCase):
         )
 
         self.assertEqual(profile.game_name, "Tester")
+        self.assertEqual(profile.profile_icon_id, 6484)
         self.assertIsNone(league_page)
         self.assertIsNotNone(opgg_page)
         self.assertEqual(client.calls, ["opgg"])

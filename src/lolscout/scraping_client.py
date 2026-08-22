@@ -1513,9 +1513,13 @@ class ScrapingClient:
                 break
 
         profile_icon_id = 0
-        icon_match = re.search(r"/profileicon/(\d+)\.png|profileIconId[\"']?\s*[:=]\s*(\d+)", opgg_page, re.IGNORECASE)
+        icon_match = re.search(
+            r"/profileicon/(\d+)\.png|profile_icons/profileIcon(\d+)\.jpg|profileIconId[\"']?\s*[:=]\s*(\d+)",
+            opgg_page,
+            re.IGNORECASE,
+        )
         if icon_match:
-            profile_icon_id = int(icon_match.group(1) or icon_match.group(2) or 0)
+            profile_icon_id = int(next((group for group in icon_match.groups() if group), 0))
 
         if summoner_level <= 0 and profile_icon_id <= 0 and not self._parse_ranked_from_opgg_page(opgg_page):
             return None
