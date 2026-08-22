@@ -49,16 +49,18 @@ function showError(message) {
 }
 
 function pickHomeHero() {
-  let previous = null;
+  let stored = null;
   try {
-    previous = localStorage.getItem("mmrlol-home-hero");
+    stored = sessionStorage.getItem("mmrlol-home-hero");
   } catch {
-    // Storage can be unavailable in strict privacy modes; rotation still works.
+    // Storage can be unavailable in strict privacy modes.
   }
-  const available = homeHeroes.filter(([file]) => file !== previous);
-  const hero = available[Math.floor(Math.random() * available.length)] || homeHeroes[0];
+  const savedHero = homeHeroes.find(([file]) => file === stored);
+  if (savedHero) return savedHero;
+
+  const hero = homeHeroes[Math.floor(Math.random() * homeHeroes.length)] || homeHeroes[0];
   try {
-    localStorage.setItem("mmrlol-home-hero", hero[0]);
+    sessionStorage.setItem("mmrlol-home-hero", hero[0]);
   } catch {
     // Keep the selected in-memory hero when persistence is unavailable.
   }
