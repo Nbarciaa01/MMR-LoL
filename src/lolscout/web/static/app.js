@@ -55,6 +55,13 @@ function playerIdentity(player) {
   return `<div class="identity"><img src="${escapeHtml(icon)}" alt="" loading="lazy"><div><strong>${escapeHtml(player.game_name)}</strong><span>#${escapeHtml(player.tag_line)}</span></div></div>`;
 }
 
+function championIconUrl(championId) {
+  const id = Number(championId) || 0;
+  return id > 0
+    ? `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${id}.png`
+    : "/assets/mmr-logo-app.png";
+}
+
 function renderRanking(data) {
   const rows = data.players.map((result, index) => {
     if (!result.ok) return `<div class="error-row">${escapeHtml(result.riot_id)} · ${escapeHtml(result.error)}</div>`;
@@ -81,7 +88,11 @@ function renderToday(data) {
     if (!result.ok) return `<article class="summary-card"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
     const s = result.summary;
     const changeClass = s.lp_change > 0 ? "positive" : s.lp_change < 0 ? "negative" : "";
-    const matches = (s.today_matches || []).map(match => `<span class="match-result ${match.won ? "win" : "loss"}" title="${escapeHtml(`${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`)}">${match.won ? "V" : "D"}</span>`).join("");
+    const matches = (s.today_matches || []).map(match => {
+      const outcome = match.won ? "Victoria" : "Derrota";
+      const label = `${outcome} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`;
+      return `<span class="match-result ${match.won ? "win" : "loss"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
+    }).join("");
     return `<article class="summary-card"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div><span class="source">${escapeHtml(result.source)}</span></article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
@@ -92,7 +103,7 @@ function renderLive(data) {
     if (!result.ok) return `<article class="summary-card"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
     const s = result.summary;
     const riotId = `${s.game_name}#${s.tag_line}`;
-    const teams = (s.participants || []).map(player => `<div class="live-player"><img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${player.champion_id}.png" alt="" loading="lazy"><span>${escapeHtml(player.game_name)}${player.tag_line ? `#${escapeHtml(player.tag_line)}` : ""}</span><small>${escapeHtml(player.team_color)}</small></div>`).join("");
+    const teams = (s.participants || []).map(player => `<div class="live-player"><img src="${championIconUrl(player.champion_id)}" alt="" loading="lazy"><span>${escapeHtml(player.game_name)}${player.tag_line ? `#${escapeHtml(player.tag_line)}` : ""}</span><small>${escapeHtml(player.team_color)}</small></div>`).join("");
     return `<article class="summary-card live-card"><h2>${escapeHtml(riotId)}</h2><p>${escapeHtml(s.champion || "Esperando partida")}</p><div class="live-status ${s.in_game ? "online" : ""}">${s.in_game ? escapeHtml(s.status_text || "En partida") : escapeHtml(s.status_text || "Fuera de partida")}</div>${s.in_game ? `<div class="live-roster">${teams}</div>` : ""}<span class="source">${escapeHtml(result.source)}</span></article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
