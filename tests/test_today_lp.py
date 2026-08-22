@@ -264,6 +264,39 @@ class TodayLpTests(unittest.TestCase):
 
         self.assertIsNone(baseline)
 
+    def test_select_today_baseline_infers_game_from_ranked_total_when_matches_unavailable(self) -> None:
+        now = datetime.now(timezone.utc)
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        previous_state = _TodayLpBaselineCandidate(
+            score=1779,
+            rank_text="Platinum III - 79 LP",
+            observed_at=start_of_day - timedelta(hours=5),
+            source="Cache local",
+            wins=152,
+            losses=156,
+        )
+        current_state = _TodayLpBaselineCandidate(
+            score=1798,
+            rank_text="Platinum III - 98 LP",
+            observed_at=now,
+            source="Cache local",
+            wins=153,
+            losses=156,
+        )
+
+        baseline = ScrapingClient._select_today_baseline_candidate(
+            [previous_state, current_state],
+            start_of_day,
+            now,
+            current_total_games=309,
+            today_match_count=0,
+            current_lp_score=1798,
+        )
+
+        self.assertIsNotNone(baseline)
+        self.assertEqual(baseline.score, 1779)
+        self.assertEqual(baseline.total_games, 308)
+
     def test_ranking_profile_prefers_opgg_before_leagueofgraphs(self) -> None:
         client = StubFallbackClient()
 

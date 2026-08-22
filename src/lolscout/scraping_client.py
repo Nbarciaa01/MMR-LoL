@@ -210,7 +210,7 @@ LP_TRACKING_TIER_SCORE = {
 LP_TRACKING_DIVISION_SCORE = {"IV": 0, "III": 100, "II": 200, "I": 300}
 TODAY_LP_SNAPSHOT_LIMIT = 96
 TODAY_LP_SNAPSHOT_DEDUP_SECONDS = 10 * 60
-TODAY_BASELINE_GRACE_HOURS = 4
+TODAY_BASELINE_GRACE_HOURS = 6
 
 
 @dataclass
@@ -835,6 +835,21 @@ class ScrapingClient:
                 has_pre_match_candidates = True
 
         if today_match_count <= 0:
+            inference_window = timedelta(hours=TODAY_BASELINE_GRACE_HOURS)
+            previous_game_state = []
+            if current_total_games is not None:
+                previous_game_state = [
+                    candidate
+                    for candidate in search_candidates
+                    if candidate.total_games is not None
+                    and candidate.total_games < current_total_games
+                    and start_of_day - inference_window
+                    <= candidate.observed_at
+                    <= start_of_day + inference_window
+                ]
+            if previous_game_state:
+                return min(previous_game_state, key=_closest_to_day_start)
+
             same_state_candidates = []
             if current_total_games is not None and current_lp_score is not None:
                 same_state_candidates = [
