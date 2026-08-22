@@ -91,7 +91,7 @@ function renderToday(data) {
     const matches = (s.today_matches || []).map(match => {
       const outcome = match.won ? "Victoria" : "Derrota";
       const label = `${outcome} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`;
-      return `<span class="match-result ${match.won ? "win" : "loss"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
+      return `<span class="match-result ${match.won ? "win" : "loss"}" data-outcome="${match.won ? "W" : "L"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
     }).join("");
     return `<article class="summary-card"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div><span class="source">${escapeHtml(result.source)}</span></article>`;
   }).join("");
