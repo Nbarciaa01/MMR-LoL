@@ -239,6 +239,31 @@ class TodayLpTests(unittest.TestCase):
         self.assertIsNotNone(baseline)
         self.assertEqual(baseline.observed_at, same_day.observed_at)
 
+    def test_select_today_baseline_rejects_snapshot_after_first_match(self) -> None:
+        now = datetime.now(timezone.utc)
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        first_match_at = start_of_day + timedelta(minutes=20)
+        current_candidate = _TodayLpBaselineCandidate(
+            score=1798,
+            rank_text="Platinum III - 98 LP",
+            observed_at=first_match_at + timedelta(hours=10),
+            source="Cache local",
+            wins=153,
+            losses=156,
+        )
+
+        baseline = ScrapingClient._select_today_baseline_candidate(
+            [current_candidate],
+            start_of_day,
+            now,
+            first_match_at=first_match_at,
+            current_total_games=309,
+            today_match_count=1,
+            current_lp_score=1798,
+        )
+
+        self.assertIsNone(baseline)
+
     def test_ranking_profile_prefers_opgg_before_leagueofgraphs(self) -> None:
         client = StubFallbackClient()
 

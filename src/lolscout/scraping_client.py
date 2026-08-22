@@ -827,10 +827,12 @@ class ScrapingClient:
             return (candidate.observed_at, -_source_priority(candidate))
 
         search_candidates = valid_candidates
+        has_pre_match_candidates = False
         if first_match_at is not None:
             pre_match_candidates = [candidate for candidate in valid_candidates if candidate.observed_at <= first_match_at]
             if pre_match_candidates:
                 search_candidates = pre_match_candidates
+                has_pre_match_candidates = True
 
         if today_match_count <= 0:
             same_state_candidates = []
@@ -864,6 +866,11 @@ class ScrapingClient:
             ]
             if matching_game_count:
                 return max(matching_game_count, key=_most_recent)
+
+        # Once a match has started, a later snapshot is the resulting state,
+        # not a valid start-of-day baseline. Returning it would report 0 LP.
+        if first_match_at is not None and not has_pre_match_candidates:
+            return None
 
         same_day_candidates = [candidate for candidate in search_candidates if candidate.observed_at >= start_of_day]
         if same_day_candidates:
