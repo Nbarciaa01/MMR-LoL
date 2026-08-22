@@ -82,6 +82,34 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .api-state.is-fallback span { background: var(--gold); }
 
 .content { max-width: 1240px; margin: 0 auto; padding: 30px 32px 60px; }
+.is-home .overview { display: none; }
+.content.home-content { max-width: none; padding: 0; }
+.home-shell { display: grid; gap: 14px; padding: 18px max(18px, calc((100vw - 1240px) / 2)) 28px; }
+.home-intro { min-height: 174px; display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(260px, .9fr); align-items: center; gap: 34px; padding: 28px 38px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #101620; }
+.home-intro-brand { min-width: 0; display: flex; align-items: center; gap: 26px; }
+.home-logo { width: 94px; height: 94px; flex: 0 0 94px; display: grid; place-items: center; border: 1px solid #d9ad5366; border-radius: 8px; background: #0b1018; }
+.home-logo img { width: 76px; height: 76px; object-fit: contain; }
+.home-intro h1 { margin: 0 0 12px; font-size: 38px; line-height: 1; }
+.home-intro strong { color: #e7bd70; font-size: 14px; }
+.home-intro p:not(.eyebrow) { max-width: 66ch; margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.home-intro aside { min-width: 0; padding-left: 32px; border-left: 1px solid var(--line); }
+.home-intro aside h2 { margin: 0; font-size: 20px; }
+
+.home-hero { position: relative; min-height: clamp(520px, calc(100vh - 290px), 700px); overflow: hidden; border: 1px solid #d9ad5359; border-radius: 8px; background-color: #0c1017; background-image: var(--home-hero); background-position: center; background-size: cover; box-shadow: inset 520px 0 180px rgba(5, 7, 11, .88), inset 0 -180px 140px rgba(5, 7, 11, .58); }
+.home-hero-badges { position: absolute; top: 24px; right: 24px; left: 24px; display: flex; justify-content: space-between; pointer-events: none; }
+.home-hero-badges span { min-height: 28px; display: inline-flex; align-items: center; padding: 0 13px; border: 1px solid #d9ad535e; border-radius: 999px; color: #efd294; background: rgba(7,10,15,.78); font-size: 10px; font-weight: 850; text-transform: uppercase; }
+.home-hero-copy { position: absolute; left: 28px; bottom: 132px; z-index: 2; max-width: 410px; }
+.home-hero-copy h2 { margin: 0; font-size: 48px; line-height: 1.05; }
+.home-hero-copy > p:not(.eyebrow) { margin: 12px 0 18px; color: #d0d7e1; font-size: 13px; }
+.home-primary { min-width: 176px; min-height: 40px; border: 1px solid var(--gold); border-radius: 6px; color: #171005; background: var(--gold); font-weight: 850; }
+.home-primary:hover { background: #efc66f; }
+.home-actions { position: absolute; right: 26px; bottom: 24px; left: 26px; z-index: 3; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.home-actions button { position: relative; min-height: 86px; display: grid; align-content: end; padding: 15px; overflow: hidden; border: 1px solid #4a5669; border-radius: 7px; color: var(--text); background: rgba(7, 10, 15, .88); backdrop-filter: blur(9px); text-align: left; }
+.home-actions button:hover { border-color: var(--gold); background: rgba(16, 22, 32, .94); transform: translateY(-2px); }
+.home-action-number { position: absolute; top: 12px; right: 13px; color: #d9ad5380; font-size: 10px; font-weight: 900; }
+.home-actions strong, .home-actions small { display: block; }
+.home-actions strong { font-size: 15px; }
+.home-actions small { margin-top: 2px; color: var(--gold); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .loading, .empty-state { min-height: 260px; display: grid; place-content: center; justify-items: center; color: var(--muted); text-align: center; }
 .loading span { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--gold); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -220,6 +248,11 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
   .player-row .games, .player-row .source { display: none; }
   .summary-grid, .build-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-card:has(.live-roster) { grid-column: 1 / -1; }
+  .home-intro { grid-template-columns: 1fr; gap: 22px; padding: 26px; }
+  .home-intro aside { padding: 20px 0 0; border-top: 1px solid var(--line); border-left: 0; }
+  .home-hero { min-height: 650px; background-position: 62% center; }
+  .home-hero-copy { bottom: 224px; }
+  .home-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .footer-inner { grid-template-columns: auto 1fr; gap: 16px 28px; }
   .riot-disclaimer { grid-column: 1 / -1; grid-row: 2; }
   .site-footer nav { justify-self: end; }
@@ -230,6 +263,21 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
   .overview { align-items: start; flex-direction: column; background-position: 62% center; }
   .overview h1 { font-size: 36px; }
   .content { padding: 20px 14px 44px; }
+  .content.home-content { padding: 0; }
+  .home-shell { gap: 10px; padding: 10px; }
+  .home-intro { min-height: 0; padding: 20px; }
+  .home-intro-brand { align-items: flex-start; gap: 14px; }
+  .home-logo { width: 62px; height: 62px; flex-basis: 62px; }
+  .home-logo img { width: 50px; height: 50px; }
+  .home-intro h1 { margin-bottom: 9px; font-size: 27px; }
+  .home-intro strong { font-size: 12px; }
+  .home-intro aside { display: none; }
+  .home-hero { min-height: 650px; background-image: var(--home-hero); background-position: 64% top; box-shadow: inset 0 -430px 230px rgba(5, 7, 11, .94); }
+  .home-hero-badges { top: 14px; right: 14px; left: 14px; }
+  .home-hero-copy { right: 18px; bottom: 250px; left: 18px; }
+  .home-hero-copy h2 { font-size: 39px; }
+  .home-actions { right: 12px; bottom: 12px; left: 12px; gap: 7px; }
+  .home-actions button { min-height: 82px; padding: 12px; }
   .player-row { grid-template-columns: 28px minmax(0, 1fr) 92px; gap: 8px; padding: 10px; }
   .player-row .winrate, .player-row .mmr { display: none; }
   .identity img { width: 40px; height: 40px; }

@@ -1,4 +1,4 @@
-const state = { view: "ranking", platform: "EUW1", config: null, champions: null };
+const state = { view: "home", platform: "EUW1", config: null, champions: null, homeHero: null };
 const content = document.querySelector("#content");
 const title = document.querySelector("#view-title");
 const description = document.querySelector("#view-description");
@@ -10,11 +10,29 @@ const settingsMessage = document.querySelector("#settings-message");
 const playerCount = document.querySelector("#player-count");
 
 const viewCopy = {
+  home: ["MMR LoL Scout", "El grupo, en una sola vista."],
   ranking: ["Ranking SoloQ", "Comparativa de rango, LP y MMR estimado."],
   today: ["Lo que ha pasado hoy", "Balance de LP desde las 00:00 y partidas recientes."],
   live: ["En partida", "Estado actual del grupo y composiciones detectadas."],
   builds: ["Builds por campeón", "Runas, objetos, habilidades y matchups en una consulta rápida."],
 };
+
+const homeHeroes = [
+  ["home-hero-ahri-base.jpg", "Ahri"],
+  ["home-hero-ashe-base.jpg", "Ashe"],
+  ["home-hero-diana-base.jpg", "Diana"],
+  ["home-hero-irelia-base.jpg", "Irelia"],
+  ["home-hero-jhin-base.jpg", "Jhin"],
+  ["home-hero-kaisa-base.jpg", "Kai'Sa"],
+  ["home-hero-katarina-base.jpg", "Katarina"],
+  ["home-hero-leblanc-base.jpg", "LeBlanc"],
+  ["home-hero-morgana-base.jpg", "Morgana"],
+  ["home-hero-syndra-base.jpg", "Syndra"],
+  ["home-hero-vayne-base.jpg", "Vayne"],
+  ["home-hero-yasuo-base.jpg", "Yasuo"],
+  ["home-hero-yone-base.jpg", "Yone"],
+  ["home-hero-zyra-base.jpg", "Zyra"],
+];
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, char => ({
@@ -28,6 +46,45 @@ function loading(label = "Cargando datos…") {
 
 function showError(message) {
   content.innerHTML = `<div class="empty-state"><strong>No se pudieron cargar los datos</strong><p>${escapeHtml(message)}</p></div>`;
+}
+
+function pickHomeHero() {
+  let previous = null;
+  try {
+    previous = localStorage.getItem("mmrlol-home-hero");
+  } catch {
+    // Storage can be unavailable in strict privacy modes; rotation still works.
+  }
+  const available = homeHeroes.filter(([file]) => file !== previous);
+  const hero = available[Math.floor(Math.random() * available.length)] || homeHeroes[0];
+  try {
+    localStorage.setItem("mmrlol-home-hero", hero[0]);
+  } catch {
+    // Keep the selected in-memory hero when persistence is unavailable.
+  }
+  return hero;
+}
+
+function renderHome() {
+  const [image, champion] = state.homeHero || (state.homeHero = pickHomeHero());
+  content.innerHTML = `<div class="home-shell">
+    <section class="home-intro">
+      <div class="home-intro-brand"><div class="home-logo"><img src="/assets/mmr-logo-app.png" alt=""></div><div><p class="eyebrow">Proyecto del grupo</p><h1>MMR LoL Scout</h1><strong>Elo, LP diarios y partidas activas en una sola vista.</strong><p>Una herramienta privada construida alrededor de nuestros Riot IDs.</p></div></div>
+      <aside><p class="eyebrow">Entre amigos</p><h2>SoloQ, live y builds</h2><p>Seguimiento directo del grupo con datos oficiales de Riot y consultas rápidas para cada partida.</p></aside>
+    </section>
+    <section class="home-hero">
+      <div class="home-hero-badges"><span>League of Legends</span><span>${escapeHtml(champion)}</span></div>
+      <div class="home-hero-copy"><p class="eyebrow">SoloQ scouting</p><h2>MMR<br>LoL Scout</h2><p>El grupo, sus rangos y cada partida de hoy.</p><button class="home-primary" data-target="ranking">Ver jugadores</button></div>
+      <nav class="home-actions" aria-label="Accesos directos">
+        <button data-target="today"><span class="home-action-number">01</span><strong>Hoy</strong><small>LP del día</small></button>
+        <button data-target="ranking"><span class="home-action-number">02</span><strong>Ranking</strong><small>SoloQ</small></button>
+        <button data-target="builds"><span class="home-action-number">03</span><strong>Builds</strong><small>Lolalytics</small></button>
+        <button data-target="live"><span class="home-action-number">04</span><strong>En partida</strong><small>Live</small></button>
+      </nav>
+    </section>
+  </div>`;
+  content.querySelector(".home-hero").style.setProperty("--home-hero", `url('/assets/${image}')`);
+  content.querySelectorAll("[data-target]").forEach(button => button.addEventListener("click", () => navigateTo(button.dataset.target)));
 }
 
 async function getJson(url) {
@@ -139,6 +196,12 @@ async function loadView(force = false) {
   const [nextTitle, nextDescription] = viewCopy[state.view];
   title.textContent = nextTitle;
   description.textContent = nextDescription;
+  document.body.classList.toggle("is-home", state.view === "home");
+  content.classList.toggle("home-content", state.view === "home");
+  if (state.view === "home") {
+    renderHome();
+    return;
+  }
   loading();
   try {
     if (state.view === "ranking") renderRanking(await getJson(`/api/ranking?platform=${state.platform}&force_refresh=${force}`));
@@ -158,6 +221,9 @@ async function initialise() {
     platform.innerHTML = state.config.platforms.map(item => `<option value="${item}" ${item === state.platform ? "selected" : ""}>${item}</option>`).join("");
     apiState.className = `api-state ${state.config.riot_configured ? "is-ready" : "is-fallback"}`;
     apiState.querySelector("strong").textContent = state.config.riot_configured ? "Riot API conectada" : "Fuentes públicas activas";
+    const requestedView = location.hash.slice(1);
+    if (Object.hasOwn(viewCopy, requestedView)) state.view = requestedView;
+    document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("is-active", tab.dataset.view === state.view));
     await loadView();
   } catch (error) { showError(error.message); }
 }
@@ -218,12 +284,15 @@ async function saveSettings(event) {
   } catch (error) { setSettingsMessage(error.message, "error"); }
 }
 
-document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => {
-  document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("is-active", tab === button));
-  state.view = button.dataset.view;
+function navigateTo(view) {
+  if (!Object.hasOwn(viewCopy, view)) return;
+  document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("is-active", tab.dataset.view === view));
+  state.view = view;
   location.hash = state.view;
   loadView();
-}));
+}
+
+document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => navigateTo(button.dataset.view)));
 platform.addEventListener("change", () => { state.platform = platform.value; loadView(); });
 document.querySelector("#refresh").addEventListener("click", () => loadView(true));
 document.querySelector("#settings").addEventListener("click", openSettings);
