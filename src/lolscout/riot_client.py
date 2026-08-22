@@ -180,23 +180,23 @@ class RiotClient:
             f"{quote(puuid, safe='')}"
         )
         summoner = self._get_json(summoner_url, ttl_seconds=15 * 60)
-        if not isinstance(summoner, dict) or not summoner.get("id"):
+        if not isinstance(summoner, dict) or not summoner.get("puuid"):
             raise RiotApiError("Riot no devolvio los datos de invocador.")
 
         return RiotIdentity(
             puuid=puuid,
-            summoner_id=str(summoner["id"]),
+            summoner_id=str(summoner.get("id") or puuid),
             game_name=str(account.get("gameName") or game_name),
             tag_line=str(account.get("tagLine") or tag_line),
             summoner_level=int(summoner.get("summonerLevel", 0) or 0),
             profile_icon_id=int(summoner.get("profileIconId", 0) or 0),
         )
 
-    def fetch_ranked_entries(self, platform: str, summoner_id: str) -> list[RankedEntry]:
+    def fetch_ranked_entries(self, platform: str, puuid: str) -> list[RankedEntry]:
         platform = platform.strip().upper()
         url = (
-            f"https://{platform.lower()}.api.riotgames.com/lol/league/v4/entries/by-summoner/"
-            f"{quote(summoner_id, safe='')}"
+            f"https://{platform.lower()}.api.riotgames.com/lol/league/v4/entries/by-puuid/"
+            f"{quote(puuid, safe='')}"
         )
         payload = self._get_json(url, ttl_seconds=90)
         if not isinstance(payload, list):
@@ -219,7 +219,7 @@ class RiotClient:
         return entries
 
     def _ranking_from_identity(self, platform: str, identity: RiotIdentity) -> PlayerSummary:
-        entries = self.fetch_ranked_entries(platform, identity.summoner_id)
+        entries = self.fetch_ranked_entries(platform, identity.puuid)
         soloq = next((entry for entry in entries if entry.queue_type == "RANKED_SOLO_5x5"), None)
         flex = next((entry for entry in entries if entry.queue_type == "RANKED_FLEX_SR"), None)
         ranked_games = soloq.total_games if soloq and soloq.total_games else None

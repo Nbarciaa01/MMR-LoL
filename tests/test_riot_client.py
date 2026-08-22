@@ -22,6 +22,7 @@ class RiotClientTests(unittest.TestCase):
         summoner_response = Mock(status_code=200)
         summoner_response.json.return_value = {
             "id": "summoner-id",
+            "puuid": "player-puuid",
             "summonerLevel": 123,
             "profileIconId": 456,
         }
@@ -46,6 +47,7 @@ class RiotClientTests(unittest.TestCase):
         summoner_response = Mock(status_code=200)
         summoner_response.json.return_value = {
             "id": "summoner-id",
+            "puuid": "player-puuid",
             "summonerLevel": 50,
             "profileIconId": 12,
         }
@@ -67,6 +69,7 @@ class RiotClientTests(unittest.TestCase):
         summary = self.client.fetch_player_ranking("Player", "EUW", "EUW1")
 
         self.assertEqual(summary.soloq.league_points, 35)
+        self.assertIn("entries/by-puuid/player-puuid", self.client.session.get.call_args_list[2].args[0])
         self.assertEqual(summary.ranked_games, 30)
         self.assertEqual(summary.global_winrate, 66.7)
         self.assertIsNotNone(summary.estimated_mmr)
