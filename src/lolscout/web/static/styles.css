@@ -81,7 +81,7 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .content { max-width: 1240px; margin: 0 auto; padding: 30px 32px 60px; }
 .is-home .overview { display: none; }
 .content.home-content { max-width: none; padding: 0; }
-.home-shell { display: grid; gap: 14px; padding: 18px max(18px, calc((100vw - 1240px) / 2)) 28px; }
+.home-shell { width: 100%; display: grid; gap: 16px; padding: 18px clamp(18px, 2vw, 32px) 28px; }
 .home-intro { min-height: 174px; display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(260px, .9fr); align-items: center; gap: 34px; padding: 28px 38px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #101620; }
 .home-intro-brand { min-width: 0; display: flex; align-items: center; gap: 26px; }
 .home-logo { width: 94px; height: 94px; flex: 0 0 94px; display: grid; place-items: center; border: 1px solid #d9ad5366; border-radius: 8px; background: #0b1018; }
@@ -92,7 +92,7 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .home-intro aside { min-width: 0; padding-left: 32px; border-left: 1px solid var(--line); }
 .home-intro aside h2 { margin: 0; font-size: 20px; }
 
-.home-hero { position: relative; min-height: clamp(520px, calc(100vh - 290px), 700px); overflow: hidden; border: 1px solid #d9ad5359; border-radius: 8px; background-color: #0c1017; background-image: var(--session-hero); background-position: center; background-size: cover; box-shadow: inset 520px 0 180px rgba(5, 7, 11, .88), inset 0 -180px 140px rgba(5, 7, 11, .58); }
+.home-hero { position: relative; width: 100%; min-height: clamp(540px, calc(100vh - 290px), 760px); overflow: hidden; border: 1px solid #d9ad5359; border-radius: 8px; background-color: #0c1017; background-image: var(--session-hero); background-position: center; background-size: cover; box-shadow: inset 520px 0 180px rgba(5, 7, 11, .88), inset 0 -180px 140px rgba(5, 7, 11, .58); }
 .home-hero-badges { position: absolute; top: 24px; right: 24px; left: 24px; display: flex; justify-content: space-between; pointer-events: none; }
 .home-hero-badges span { min-height: 28px; display: inline-flex; align-items: center; padding: 0 13px; border: 1px solid #d9ad535e; border-radius: 999px; color: #efd294; background: rgba(7,10,15,.78); font-size: 10px; font-weight: 850; text-transform: uppercase; }
 .home-hero-copy { position: absolute; left: 28px; bottom: 132px; z-index: 2; max-width: 410px; }
@@ -310,6 +310,7 @@ body:not(.is-home) .content::before { position: absolute; top: 0; right: 32px; l
   .player-row .games { display: none; }
   .summary-grid, .build-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-card:has(.live-roster) { grid-column: 1 / -1; }
+  .home-shell { gap: 12px; padding: 14px 14px 22px; }
   .home-intro { grid-template-columns: 1fr; gap: 22px; padding: 26px; }
   .home-intro aside { padding: 20px 0 0; border-top: 1px solid var(--line); border-left: 0; }
   .home-hero { min-height: 650px; background-position: 62% center; }
@@ -357,4 +358,17 @@ body:not(.is-home) .content::before { position: absolute; top: 0; right: 32px; l
   .settings-basics { grid-template-columns: 1fr; }
   .player-field { grid-template-columns: minmax(0, 1fr) 12px minmax(76px, .42fr) 30px; gap: 5px; }
   .settings-dialog form > footer { padding: 14px 16px; }
+}
+
+@media (max-width: 420px) {
+  .home-intro-brand { display: grid; grid-template-columns: 54px minmax(0, 1fr); }
+  .home-logo { width: 54px; height: 54px; flex-basis: 54px; }
+  .home-logo img { width: 44px; height: 44px; }
+  .home-intro h1 { font-size: 24px; }
+  .home-hero { min-height: 690px; }
+  .home-hero-badges { gap: 8px; }
+  .home-hero-badges span { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .home-primary { width: 100%; }
+  .home-actions { grid-template-columns: 1fr 1fr; }
+  .home-actions button { min-width: 0; }
 }
