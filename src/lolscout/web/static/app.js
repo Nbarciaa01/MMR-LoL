@@ -67,8 +67,11 @@ function pickHomeHero() {
   return hero;
 }
 
+state.homeHero = pickHomeHero();
+document.documentElement.style.setProperty("--session-hero", `url('/assets/${state.homeHero[0]}')`);
+
 function renderHome() {
-  const [image, champion] = state.homeHero || (state.homeHero = pickHomeHero());
+  const [, champion] = state.homeHero;
   content.innerHTML = `<div class="home-shell">
     <section class="home-intro">
       <div class="home-intro-brand"><div class="home-logo"><img src="/assets/mmr-logo-app.png" alt=""></div><div><p class="eyebrow">Proyecto del grupo</p><h1>MMR LoL Scout</h1><strong>Elo, LP diarios y partidas activas en una sola vista.</strong><p>Una herramienta privada construida alrededor de nuestros Riot IDs.</p></div></div>
@@ -85,7 +88,6 @@ function renderHome() {
       </nav>
     </section>
   </div>`;
-  content.querySelector(".home-hero").style.setProperty("--home-hero", `url('/assets/${image}')`);
   content.querySelectorAll("[data-target]").forEach(button => button.addEventListener("click", () => navigateTo(button.dataset.target)));
 }
 

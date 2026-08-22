@@ -1,5 +1,6 @@
 :root {
   color-scheme: dark;
+  --session-hero: url('/assets/home-hero-zyra-base.jpg');
   --bg: #090c12;
   --surface: #111722;
   --surface-2: #171f2d;
@@ -71,7 +72,7 @@ main { min-height: calc(100vh - 68px); }
   border-bottom: 1px solid var(--line);
   background:
     linear-gradient(90deg, rgba(9,12,18,.98) 12%, rgba(9,12,18,.78) 58%, rgba(9,12,18,.22)),
-    url('/assets/home-hero-zyra.jpg') center 30% / cover;
+    var(--session-hero) center 30% / cover;
 }
 .eyebrow { margin: 0 0 9px; color: var(--gold); text-transform: uppercase; font-size: 12px; font-weight: 800; }
 h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacing: 0; }
@@ -95,7 +96,7 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .home-intro aside { min-width: 0; padding-left: 32px; border-left: 1px solid var(--line); }
 .home-intro aside h2 { margin: 0; font-size: 20px; }
 
-.home-hero { position: relative; min-height: clamp(520px, calc(100vh - 290px), 700px); overflow: hidden; border: 1px solid #d9ad5359; border-radius: 8px; background-color: #0c1017; background-image: var(--home-hero); background-position: center; background-size: cover; box-shadow: inset 520px 0 180px rgba(5, 7, 11, .88), inset 0 -180px 140px rgba(5, 7, 11, .58); }
+.home-hero { position: relative; min-height: clamp(520px, calc(100vh - 290px), 700px); overflow: hidden; border: 1px solid #d9ad5359; border-radius: 8px; background-color: #0c1017; background-image: var(--session-hero); background-position: center; background-size: cover; box-shadow: inset 520px 0 180px rgba(5, 7, 11, .88), inset 0 -180px 140px rgba(5, 7, 11, .58); }
 .home-hero-badges { position: absolute; top: 24px; right: 24px; left: 24px; display: flex; justify-content: space-between; pointer-events: none; }
 .home-hero-badges span { min-height: 28px; display: inline-flex; align-items: center; padding: 0 13px; border: 1px solid #d9ad535e; border-radius: 999px; color: #efd294; background: rgba(7,10,15,.78); font-size: 10px; font-weight: 850; text-transform: uppercase; }
 .home-hero-copy { position: absolute; left: 28px; bottom: 132px; z-index: 2; max-width: 410px; }
@@ -272,7 +273,7 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
   .home-intro h1 { margin-bottom: 9px; font-size: 27px; }
   .home-intro strong { font-size: 12px; }
   .home-intro aside { display: none; }
-  .home-hero { min-height: 650px; background-image: var(--home-hero); background-position: 64% top; box-shadow: inset 0 -430px 230px rgba(5, 7, 11, .94); }
+  .home-hero { min-height: 650px; background-image: var(--session-hero); background-position: 64% top; box-shadow: inset 0 -430px 230px rgba(5, 7, 11, .94); }
   .home-hero-badges { top: 14px; right: 14px; left: 14px; }
   .home-hero-copy { right: 18px; bottom: 250px; left: 18px; }
   .home-hero-copy h2 { font-size: 39px; }
