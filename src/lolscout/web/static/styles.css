@@ -163,22 +163,33 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .legal-header a { color: var(--text); text-decoration: none; }
 .legal-header a:hover { color: var(--gold); }
 
-.settings-dialog { width: min(620px, calc(100vw - 28px)); max-height: min(760px, calc(100vh - 28px)); padding: 0; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 24px 80px #000b; }
+.settings-dialog { width: min(680px, calc(100vw - 28px)); max-height: min(780px, calc(100vh - 28px)); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 24px 80px #000b; }
 .settings-dialog::backdrop { background: #030509c7; backdrop-filter: blur(5px); }
+.settings-dialog form { max-height: min(780px, calc(100vh - 28px)); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .settings-dialog form > header, .settings-dialog form > footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
-.settings-dialog form > footer { justify-content: flex-end; border-top: 1px solid var(--line); border-bottom: 0; }
+.settings-dialog form > footer { position: relative; z-index: 2; justify-content: flex-end; min-height: 70px; border-top: 1px solid var(--line); border-bottom: 0; background: var(--surface); }
 .settings-dialog h2 { margin: 0; font-size: 20px; }
-.dialog-close { width: 36px; height: 36px; border: 0; background: transparent; color: var(--muted); font-size: 25px; }
-.field { display: grid; gap: 7px; margin: 16px 20px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.dialog-icon-close { width: 36px; height: 36px; border: 0; background: transparent; color: var(--muted); font-size: 25px; }
+.dialog-icon-close:hover { color: var(--text); }
+.settings-body { min-height: 0; overflow-y: auto; padding: 20px; scrollbar-color: #596477 var(--surface); scrollbar-width: thin; }
+.settings-basics { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(150px, .7fr); gap: 14px; }
+.field { min-width: 0; display: grid; gap: 7px; margin: 0; color: var(--muted); font-size: 12px; font-weight: 700; }
 .field input, .field select, .player-field input { width: 100%; min-height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 5px; outline: none; color: var(--text); background: var(--bg); }
 .field input:focus, .field select:focus, .player-field input:focus { border-color: var(--gold); }
-.players-editor { margin: 20px; }
+.players-editor { margin-top: 24px; }
 .editor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 9px; }
+.editor-head > div { display: flex; align-items: baseline; gap: 8px; }
+.editor-head span { color: var(--muted); font-size: 11px; }
 .editor-head button { border: 0; color: var(--gold); background: transparent; font-weight: 800; }
-#player-fields { max-height: 265px; display: grid; gap: 7px; overflow-y: auto; }
-.player-field { display: grid; grid-template-columns: minmax(0, 1.5fr) auto minmax(80px, .7fr) 34px; align-items: center; gap: 7px; }
+#player-fields { display: grid; gap: 7px; }
+.player-field { display: grid; grid-template-columns: minmax(0, 1fr) 14px 150px 34px; align-items: center; gap: 8px; }
+.player-field > span { color: var(--muted); text-align: center; }
 .remove-player { width: 34px; height: 34px; border: 0; color: var(--red); background: transparent; font-size: 20px; }
-.form-message { min-height: 18px; margin: 0 20px; color: var(--gold); font-size: 12px; }
+.remove-player:hover { background: #f06d7810; }
+.form-message { display: none; margin: 16px 0 0; padding: 10px 12px; border-left: 3px solid var(--gold); color: #d8dee8; background: #d9ad530d; font-size: 12px; line-height: 1.45; }
+.form-message:not(:empty) { display: block; }
+.form-message[data-state="error"] { border-color: var(--red); background: #f06d780d; }
+.form-message[data-state="success"] { border-color: var(--green); background: #45c4860d; }
 .primary, .secondary { min-height: 38px; padding: 0 15px; border-radius: 5px; font-weight: 800; }
 .primary { border: 1px solid var(--gold); color: #171005; background: var(--gold); }
 .secondary { border: 1px solid var(--line); color: var(--text); background: transparent; }
@@ -222,5 +233,10 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
   .riot-disclaimer { grid-column: auto; grid-row: auto; max-width: 44ch; }
   .site-footer nav { width: 100%; justify-self: auto; padding-top: 12px; border-top: 1px solid var(--line); }
   .site-footer a { padding: 0 12px 0 0; margin-right: 10px; }
-  .player-field { grid-template-columns: minmax(0, 1.3fr) auto minmax(70px, .7fr) 30px; gap: 4px; }
+  .settings-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .settings-dialog form { max-height: calc(100vh - 16px); }
+  .settings-body { padding: 16px; }
+  .settings-basics { grid-template-columns: 1fr; }
+  .player-field { grid-template-columns: minmax(0, 1fr) 12px minmax(76px, .42fr) 30px; gap: 5px; }
+  .settings-dialog form > footer { padding: 14px 16px; }
 }

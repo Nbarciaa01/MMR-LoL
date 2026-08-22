@@ -29,6 +29,10 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 401)
 
+    def test_admin_token_supports_non_ascii_characters(self) -> None:
+        with patch.dict(os.environ, {"MMRLOL_ADMIN_TOKEN": "secreto-ñ-🔒"}, clear=False):
+            _require_admin("Bearer secreto-ñ-🔒")
+
     def test_config_update_saves_valid_players(self) -> None:
         payload = {
             "default_platform": "EUW1",

@@ -103,7 +103,9 @@ def _require_admin(authorization: Annotated[str | None, Header()] = None) -> Non
     if not expected:
         raise HTTPException(status_code=503, detail="La gestion web no esta habilitada en el servidor.")
     scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.casefold() != "bearer" or not hmac.compare_digest(supplied, expected):
+    if scheme.casefold() != "bearer" or not hmac.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="Token de administracion incorrecto.")
 
 

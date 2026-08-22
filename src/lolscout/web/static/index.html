@@ -7,7 +7,7 @@
     <title>MMR LoL</title>
     <meta name="description" content="Ranking, LP diarios, partidas en vivo y builds del grupo.">
     <link rel="icon" href="/assets/mmr-logo-app.png">
-    <link rel="stylesheet" href="/static/styles.css?v=3">
+    <link rel="stylesheet" href="/static/styles.css?v=4">
   </head>
   <body>
     <header class="topbar">
@@ -60,15 +60,19 @@
 
     <dialog id="settings-dialog" class="settings-dialog">
       <form id="settings-form" method="dialog">
-        <header><div><p class="eyebrow">Administración</p><h2>Jugadores del grupo</h2></div><button type="button" class="dialog-close" aria-label="Cerrar">×</button></header>
-        <label class="field"><span>Token de administración</span><input id="admin-token" type="password" autocomplete="current-password" required></label>
-        <label class="field"><span>Servidor por defecto</span><select id="settings-platform"></select></label>
-        <div class="players-editor"><div class="editor-head"><strong>Riot IDs</strong><button type="button" id="add-player">+ Añadir</button></div><div id="player-fields"></div></div>
-        <p id="settings-message" class="form-message" role="status"></p>
-        <footer><button type="button" class="secondary dialog-close">Cancelar</button><button type="submit" class="primary">Guardar cambios</button></footer>
+        <header><div><p class="eyebrow">Administración</p><h2>Jugadores del grupo</h2></div><button type="button" class="dialog-icon-close" data-dialog-close aria-label="Cerrar">×</button></header>
+        <div class="settings-body">
+          <div class="settings-basics">
+            <label class="field"><span>Token de administración</span><input id="admin-token" type="password" autocomplete="current-password" required></label>
+            <label class="field"><span>Servidor por defecto</span><select id="settings-platform"></select></label>
+          </div>
+          <div class="players-editor"><div class="editor-head"><div><strong>Riot IDs</strong><span id="player-count"></span></div><button type="button" id="add-player">+ Añadir jugador</button></div><div id="player-fields"></div></div>
+          <p id="settings-message" class="form-message" role="status"></p>
+        </div>
+        <footer><button type="button" class="secondary" data-dialog-close>Cancelar</button><button type="submit" class="primary">Guardar cambios</button></footer>
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=3" defer></script>
+    <script src="/static/app.js?v=4" defer></script>
   </body>
 </html>

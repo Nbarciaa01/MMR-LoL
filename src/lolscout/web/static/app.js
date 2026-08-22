@@ -7,6 +7,7 @@ const apiState = document.querySelector("#api-state");
 const settingsDialog = document.querySelector("#settings-dialog");
 const playerFields = document.querySelector("#player-fields");
 const settingsMessage = document.querySelector("#settings-message");
+const playerCount = document.querySelector("#player-count");
 
 const viewCopy = {
   ranking: ["Ranking SoloQ", "Comparativa de rango, LP y MMR estimado."],
@@ -155,13 +156,27 @@ function addPlayerField(player = { game_name: "", tag_line: "" }) {
   row.className = "player-field";
   row.innerHTML = `<input class="game-name" type="text" value="${escapeHtml(player.game_name)}" placeholder="Nombre" required><span>#</span><input class="tag-line" type="text" value="${escapeHtml(player.tag_line)}" placeholder="Tag" required><button type="button" class="remove-player" title="Eliminar" aria-label="Eliminar jugador">×</button>`;
   row.querySelector(".remove-player").addEventListener("click", () => {
-    if (playerFields.children.length > 1) row.remove();
+    if (playerFields.children.length > 1) {
+      row.remove();
+      updatePlayerCount();
+    }
   });
   playerFields.append(row);
+  updatePlayerCount();
+}
+
+function updatePlayerCount() {
+  const count = playerFields.children.length;
+  playerCount.textContent = `${count} ${count === 1 ? "jugador" : "jugadores"}`;
+}
+
+function setSettingsMessage(message = "", state = "") {
+  settingsMessage.textContent = message;
+  settingsMessage.dataset.state = state;
 }
 
 function openSettings() {
-  settingsMessage.textContent = state.config.management_enabled ? "" : "Configura MMRLOL_ADMIN_TOKEN en el servidor para habilitar los cambios.";
+  setSettingsMessage(state.config.management_enabled ? "" : "Configura MMRLOL_ADMIN_TOKEN en el servidor para habilitar los cambios.", state.config.management_enabled ? "" : "error");
   document.querySelector("#admin-token").value = sessionStorage.getItem("mmrlol-admin-token") || "";
   const settingsPlatform = document.querySelector("#settings-platform");
   settingsPlatform.innerHTML = state.config.platforms.map(item => `<option value="${item}" ${item === state.platform ? "selected" : ""}>${item}</option>`).join("");
@@ -177,7 +192,7 @@ async function saveSettings(event) {
     game_name: row.querySelector(".game-name").value,
     tag_line: row.querySelector(".tag-line").value,
   }));
-  settingsMessage.textContent = "Guardando…";
+  setSettingsMessage("Validando Riot IDs y guardando cambios…");
   try {
     await putJson("/api/config", {
       default_platform: document.querySelector("#settings-platform").value,
@@ -189,7 +204,7 @@ async function saveSettings(event) {
     platform.value = state.platform;
     settingsDialog.close();
     await loadView(true);
-  } catch (error) { settingsMessage.textContent = error.message; }
+  } catch (error) { setSettingsMessage(error.message, "error"); }
 }
 
 document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => {
@@ -202,7 +217,7 @@ platform.addEventListener("change", () => { state.platform = platform.value; loa
 document.querySelector("#refresh").addEventListener("click", () => loadView(true));
 document.querySelector("#settings").addEventListener("click", openSettings);
 document.querySelector("#add-player").addEventListener("click", () => addPlayerField());
-document.querySelectorAll(".dialog-close").forEach(button => button.addEventListener("click", () => settingsDialog.close()));
+document.querySelectorAll("[data-dialog-close]").forEach(button => button.addEventListener("click", () => settingsDialog.close()));
 document.querySelector("#settings-form").addEventListener("submit", saveSettings);
 
 initialise();
