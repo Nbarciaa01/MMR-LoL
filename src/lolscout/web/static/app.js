@@ -8,6 +8,8 @@ const settingsDialog = document.querySelector("#settings-dialog");
 const playerFields = document.querySelector("#player-fields");
 const settingsMessage = document.querySelector("#settings-message");
 const playerCount = document.querySelector("#player-count");
+let activeContentRequest = null;
+let contentRequestId = 0;
 
 const viewCopy = {
   home: ["MMR LoL Scout", "El grupo, en una sola vista."],
@@ -91,12 +93,27 @@ function renderHome() {
   content.querySelectorAll("[data-target]").forEach(button => button.addEventListener("click", () => navigateTo(button.dataset.target)));
 }
 
-async function getJson(url) {
-  const response = await fetch(url);
+async function getJson(url, options = {}) {
+  const response = await fetch(url, options);
   let payload;
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) throw new Error(payload.detail || `Error HTTP ${response.status}`);
   return payload;
+}
+
+function startContentRequest() {
+  activeContentRequest?.controller.abort();
+  const request = { id: ++contentRequestId, controller: new AbortController() };
+  activeContentRequest = request;
+  return request;
+}
+
+function isCurrentContentRequest(request) {
+  return activeContentRequest === request && !request.controller.signal.aborted;
+}
+
+function finishContentRequest(request) {
+  if (activeContentRequest === request) activeContentRequest = null;
 }
 
 async function putJson(url, body, token) {
@@ -187,35 +204,57 @@ function assetImages(items = []) {
 }
 
 async function loadBuild(slug) {
+  const request = startContentRequest();
   loading("Cargando build…");
   try {
-    const build = await getJson(`/api/builds/${encodeURIComponent(slug)}`);
+    const build = await getJson(`/api/builds/${encodeURIComponent(slug)}`, { signal: request.controller.signal });
+    if (!isCurrentContentRequest(request)) return;
     const sections = [build.starting_items, build.core_build].filter(Boolean).map(section => `<section class="build-section"><h3>${escapeHtml(section.title)}</h3><div class="asset-list">${assetImages(section.items)}</div></section>`).join("");
     content.innerHTML = `<div class="build-detail"><button class="back-button" id="back-builds">← Todos los campeones</button><div class="build-title"><img src="${escapeHtml(build.icon_url)}" alt=""><div><h2>${escapeHtml(build.champion)}</h2><p>${escapeHtml(build.summary || `${build.role || ""} · ${build.patch || ""}`)}</p></div></div><div class="build-sections"><section class="build-section"><h3>Runas</h3><div class="asset-list">${assetImages([...(build.primary_runes || []), ...(build.secondary_runes || [])])}</div></section><section class="build-section"><h3>Hechizos</h3><div class="asset-list">${assetImages(build.summoner_spells)}</div></section>${sections}</div></div>`;
     document.querySelector("#back-builds").addEventListener("click", () => renderChampions(state.champions));
-  } catch (error) { showError(error.message); }
+  } catch (error) {
+    if (error.name !== "AbortError" && isCurrentContentRequest(request)) showError(error.message);
+  } finally {
+    finishContentRequest(request);
+  }
 }
 
 async function loadView(force = false) {
-  const [nextTitle, nextDescription] = viewCopy[state.view];
+  const request = startContentRequest();
+  const view = state.view;
+  const [nextTitle, nextDescription] = viewCopy[view];
   title.textContent = nextTitle;
   description.textContent = nextDescription;
-  document.body.classList.toggle("is-home", state.view === "home");
-  content.classList.toggle("home-content", state.view === "home");
-  if (state.view === "home") {
+  document.body.classList.toggle("is-home", view === "home");
+  content.classList.toggle("home-content", view === "home");
+  if (view === "home") {
     renderHome();
+    finishContentRequest(request);
     return;
   }
   loading();
   try {
-    if (state.view === "ranking") renderRanking(await getJson(`/api/ranking?platform=${state.platform}&force_refresh=${force}`));
-    if (state.view === "today") renderToday(await getJson(`/api/today?platform=${state.platform}&force_refresh=${force}`));
-    if (state.view === "live") renderLive(await getJson(`/api/live?platform=${state.platform}`));
-    if (state.view === "builds") {
-      if (!state.champions || force) state.champions = (await getJson(`/api/builds/champions?force_refresh=${force}`)).champions;
+    const options = { signal: request.controller.signal };
+    let data;
+    if (view === "ranking") data = await getJson(`/api/ranking?platform=${state.platform}&force_refresh=${force}`, options);
+    if (view === "today") data = await getJson(`/api/today?platform=${state.platform}&force_refresh=${force}`, options);
+    if (view === "live") data = await getJson(`/api/live?platform=${state.platform}`, options);
+    if (view === "builds" && (!state.champions || force)) {
+      data = await getJson(`/api/builds/champions?force_refresh=${force}`, options);
+    }
+    if (!isCurrentContentRequest(request)) return;
+    if (view === "ranking") renderRanking(data);
+    if (view === "today") renderToday(data);
+    if (view === "live") renderLive(data);
+    if (view === "builds") {
+      if (data) state.champions = data.champions;
       renderChampions(state.champions);
     }
-  } catch (error) { showError(error.message); }
+  } catch (error) {
+    if (error.name !== "AbortError" && isCurrentContentRequest(request)) showError(error.message);
+  } finally {
+    finishContentRequest(request);
+  }
 }
 
 async function initialise() {
