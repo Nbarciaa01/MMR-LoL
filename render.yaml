@@ -2,6 +2,8 @@ services:
   - type: web
     name: mmrlol-web
     runtime: docker
+    plan: free
+    region: frankfurt
     healthCheckPath: /api/health
     autoDeploy: false
     envVars:
@@ -15,7 +17,3 @@ services:
         value: /var/lib/mmrlol
       - key: ALLOWED_HOSTS
         sync: false
-    disk:
-      name: mmrlol-data
-      mountPath: /var/lib/mmrlol
-      sizeGB: 1
