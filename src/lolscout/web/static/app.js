@@ -3,7 +3,6 @@ const content = document.querySelector("#content");
 const title = document.querySelector("#view-title");
 const description = document.querySelector("#view-description");
 const platform = document.querySelector("#platform");
-const apiState = document.querySelector("#api-state");
 const settingsDialog = document.querySelector("#settings-dialog");
 const playerFields = document.querySelector("#player-fields");
 const settingsMessage = document.querySelector("#settings-message");
@@ -155,10 +154,9 @@ function renderRanking(data) {
       <div class="metric mmr"><strong>${mmr}</strong><span>MMR</span></div>
       <div class="metric winrate"><strong>${winrate}</strong><span>Winrate</span></div>
       <div class="metric games"><strong>${games}</strong><span>Partidas</span></div>
-      <span class="source">${escapeHtml(result.source)}</span>
     </article>`;
   }).join("");
-  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>MMR</span><span>WR</span><span>Partidas</span><span>Fuente</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
+  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>MMR</span><span>WR</span><span>Partidas</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
 }
 
 function renderToday(data) {
@@ -171,7 +169,7 @@ function renderToday(data) {
       const label = `${outcome} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`;
       return `<span class="match-result ${match.won ? "win" : "loss"}" data-outcome="${match.won ? "W" : "L"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
     }).join("");
-    return `<article class="summary-card today-card ${changeClass || "neutral"}"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div><span class="source">${escapeHtml(result.source)}</span></article>`;
+    return `<article class="summary-card today-card ${changeClass || "neutral"}"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div></article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
 }
@@ -182,7 +180,7 @@ function renderLive(data) {
     const s = result.summary;
     const riotId = `${s.game_name}#${s.tag_line}`;
     const teams = (s.participants || []).map(player => `<div class="live-player"><img src="${championIconUrl(player.champion_id)}" alt="" loading="lazy"><span>${escapeHtml(player.game_name)}${player.tag_line ? `#${escapeHtml(player.tag_line)}` : ""}</span><small>${escapeHtml(player.team_color)}</small></div>`).join("");
-    return `<article class="summary-card live-card ${s.in_game ? "in-game" : "offline"}"><h2>${escapeHtml(riotId)}</h2><p>${escapeHtml(s.champion || "Esperando partida")}</p><div class="live-status ${s.in_game ? "online" : ""}">${s.in_game ? escapeHtml(s.status_text || "En partida") : escapeHtml(s.status_text || "Fuera de partida")}</div>${s.in_game ? `<div class="live-roster">${teams}</div>` : ""}<span class="source">${escapeHtml(result.source)}</span></article>`;
+    return `<article class="summary-card live-card ${s.in_game ? "in-game" : "offline"}"><h2>${escapeHtml(riotId)}</h2><p>${escapeHtml(s.champion || "Esperando partida")}</p><div class="live-status ${s.in_game ? "online" : ""}">${s.in_game ? escapeHtml(s.status_text || "En partida") : escapeHtml(s.status_text || "Fuera de partida")}</div>${s.in_game ? `<div class="live-roster">${teams}</div>` : ""}</article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
 }
@@ -263,8 +261,6 @@ async function initialise() {
     state.config = await getJson("/api/config");
     state.platform = state.config.default_platform;
     platform.innerHTML = state.config.platforms.map(item => `<option value="${item}" ${item === state.platform ? "selected" : ""}>${item}</option>`).join("");
-    apiState.className = `api-state ${state.config.riot_configured ? "is-ready" : "is-fallback"}`;
-    apiState.querySelector("strong").textContent = state.config.riot_configured ? "Riot API conectada" : "Fuentes públicas activas";
     const requestedView = location.hash.slice(1);
     if (Object.hasOwn(viewCopy, requestedView)) state.view = requestedView;
     document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("is-active", tab.dataset.view === state.view));
