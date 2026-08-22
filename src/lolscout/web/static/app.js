@@ -2,7 +2,6 @@ const state = { view: "home", platform: "EUW1", config: null, champions: null, h
 const content = document.querySelector("#content");
 const title = document.querySelector("#view-title");
 const description = document.querySelector("#view-description");
-const platform = document.querySelector("#platform");
 const settingsDialog = document.querySelector("#settings-dialog");
 const playerFields = document.querySelector("#player-fields");
 const settingsMessage = document.querySelector("#settings-message");
@@ -260,7 +259,6 @@ async function initialise() {
   try {
     state.config = await getJson("/api/config");
     state.platform = state.config.default_platform;
-    platform.innerHTML = state.config.platforms.map(item => `<option value="${item}" ${item === state.platform ? "selected" : ""}>${item}</option>`).join("");
     const requestedView = location.hash.slice(1);
     if (Object.hasOwn(viewCopy, requestedView)) state.view = requestedView;
     document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("is-active", tab.dataset.view === state.view));
@@ -318,7 +316,6 @@ async function saveSettings(event) {
     sessionStorage.setItem("mmrlol-admin-token", token);
     state.config = await getJson("/api/config");
     state.platform = state.config.default_platform;
-    platform.value = state.platform;
     settingsDialog.close();
     await loadView(true);
   } catch (error) { setSettingsMessage(error.message, "error"); }
@@ -333,7 +330,6 @@ function navigateTo(view) {
 }
 
 document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => navigateTo(button.dataset.view)));
-platform.addEventListener("change", () => { state.platform = platform.value; loadView(); });
 document.querySelector("#refresh").addEventListener("click", () => loadView(true));
 document.querySelector("#settings").addEventListener("click", openSettings);
 document.querySelector("#add-player").addEventListener("click", () => addPlayerField());
