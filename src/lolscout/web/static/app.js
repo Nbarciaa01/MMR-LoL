@@ -148,7 +148,7 @@ function renderRanking(data) {
     const mmr = p.estimated_mmr == null ? "—" : p.estimated_mmr.toLocaleString("es-ES");
     const winrate = p.global_winrate == null ? "—" : `${p.global_winrate}%`;
     const games = p.ranked_games == null ? "—" : p.ranked_games;
-    return `<article class="player-row">
+    return `<article class="player-row" data-position="${index + 1}">
       <div class="position">${index + 1}</div>
       ${playerIdentity(p)}
       <div class="rank">${escapeHtml(rank)}</div>
@@ -163,7 +163,7 @@ function renderRanking(data) {
 
 function renderToday(data) {
   const cards = data.players.map(result => {
-    if (!result.ok) return `<article class="summary-card"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
+    if (!result.ok) return `<article class="summary-card is-error"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
     const s = result.summary;
     const changeClass = s.lp_change > 0 ? "positive" : s.lp_change < 0 ? "negative" : "";
     const matches = (s.today_matches || []).map(match => {
@@ -171,18 +171,18 @@ function renderToday(data) {
       const label = `${outcome} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`;
       return `<span class="match-result ${match.won ? "win" : "loss"}" data-outcome="${match.won ? "W" : "L"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
     }).join("");
-    return `<article class="summary-card"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div><span class="source">${escapeHtml(result.source)}</span></article>`;
+    return `<article class="summary-card today-card ${changeClass || "neutral"}"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div><span class="source">${escapeHtml(result.source)}</span></article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
 }
 
 function renderLive(data) {
   const cards = data.players.map(result => {
-    if (!result.ok) return `<article class="summary-card"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
+    if (!result.ok) return `<article class="summary-card is-error"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
     const s = result.summary;
     const riotId = `${s.game_name}#${s.tag_line}`;
     const teams = (s.participants || []).map(player => `<div class="live-player"><img src="${championIconUrl(player.champion_id)}" alt="" loading="lazy"><span>${escapeHtml(player.game_name)}${player.tag_line ? `#${escapeHtml(player.tag_line)}` : ""}</span><small>${escapeHtml(player.team_color)}</small></div>`).join("");
-    return `<article class="summary-card live-card"><h2>${escapeHtml(riotId)}</h2><p>${escapeHtml(s.champion || "Esperando partida")}</p><div class="live-status ${s.in_game ? "online" : ""}">${s.in_game ? escapeHtml(s.status_text || "En partida") : escapeHtml(s.status_text || "Fuera de partida")}</div>${s.in_game ? `<div class="live-roster">${teams}</div>` : ""}<span class="source">${escapeHtml(result.source)}</span></article>`;
+    return `<article class="summary-card live-card ${s.in_game ? "in-game" : "offline"}"><h2>${escapeHtml(riotId)}</h2><p>${escapeHtml(s.champion || "Esperando partida")}</p><div class="live-status ${s.in_game ? "online" : ""}">${s.in_game ? escapeHtml(s.status_text || "En partida") : escapeHtml(s.status_text || "Fuera de partida")}</div>${s.in_game ? `<div class="live-roster">${teams}</div>` : ""}<span class="source">${escapeHtml(result.source)}</span></article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
 }
@@ -225,6 +225,7 @@ async function loadView(force = false) {
   const [nextTitle, nextDescription] = viewCopy[view];
   title.textContent = nextTitle;
   description.textContent = nextDescription;
+  document.body.dataset.view = view;
   document.body.classList.toggle("is-home", view === "home");
   content.classList.toggle("home-content", view === "home");
   if (view === "home") {
