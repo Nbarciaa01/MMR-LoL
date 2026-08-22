@@ -34,10 +34,12 @@ La aplicacion esta pensada inicialmente para una comunidad pequena de amigos, pe
 
 - La API key solo existe como secreto del servidor y nunca se incluye en HTML o JavaScript.
 - Las identidades se cachean durante 6 horas.
-- La clasificacion se cachea durante 90 segundos.
+- La clasificacion y su respuesta publica se cachean durante 90 segundos.
 - Las listas de partidas se cachean durante 60 segundos.
 - Los detalles de partidas terminadas se cachean durante 24 horas.
 - Spectator-V5 se cachea durante 20 segundos.
+- El resumen de Hoy se cachea durante 45 segundos y En partida durante 15 segundos.
+- Los snapshots diarios se guardan en PostgreSQL y usan explicitamente la zona `Europe/Madrid`.
 - Los errores 429 se respetan usando `Retry-After` y se muestran sin reintentos agresivos desde el navegador.
 - La gestion de jugadores requiere un secreto administrativo independiente.
 

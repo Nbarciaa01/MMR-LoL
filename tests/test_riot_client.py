@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
-from unittest.mock import Mock
+from datetime import datetime, timedelta
+from unittest.mock import Mock, patch
 
+from src.lolscout.models import MatchSummary, PlayerSummary, RankedEntry
 from src.lolscout.riot_client import RiotClient, RiotIdentity
+from src.lolscout.scraping_client import ScrapingClient, _TodayLpBaselineCandidate
+from src.lolscout.time_utils import app_now
 
 
 class RiotClientTests(unittest.TestCase):
@@ -109,6 +112,83 @@ class RiotClientTests(unittest.TestCase):
         list_url = self.client._get_json.call_args_list[0].args[0]
         self.assertIn("matches/by-puuid/player-puuid/ids", list_url)
         self.assertIn("queue=420", list_url)
+
+    def test_today_summary_recovers_pre_match_baseline_from_history(self) -> None:
+        now = app_now()
+        played_at = now - timedelta(minutes=10)
+        soloq = RankedEntry(
+            queue_type="RANKED_SOLO_5x5",
+            tier="PLATINUM",
+            rank="III",
+            league_points=98,
+            wins=21,
+            losses=10,
+        )
+        player = PlayerSummary(
+            game_name="Dark Nøwel",
+            tag_line="007",
+            summoner_level=100,
+            profile_icon_id=1,
+            platform="EUW1",
+            soloq=soloq,
+        )
+        match = MatchSummary(
+            match_id="EUW1_123",
+            champion="Ahri",
+            champion_id=103,
+            role="MIDDLE",
+            queue_name="Ranked Solo/Duo",
+            won=True,
+            kills=8,
+            deaths=2,
+            assists=10,
+            cs=190,
+            duration_min=30,
+            damage=20000,
+            gold=12000,
+            kda=9.0,
+            played_at_iso=played_at.isoformat(),
+        )
+        current_score = ScrapingClient._lp_score_from_ranked_entry(soloq)
+        self.assertIsNotNone(current_score)
+        current_candidate = _TodayLpBaselineCandidate(
+            score=current_score,
+            rank_text=soloq.display_rank,
+            observed_at=now,
+            source="Cache local",
+            wins=21,
+            losses=10,
+        )
+        historical_candidate = _TodayLpBaselineCandidate(
+            score=current_score - 19,
+            rank_text="Platinum III - 79 LP",
+            observed_at=played_at - timedelta(minutes=10),
+            source="OP.GG",
+            wins=20,
+            losses=10,
+        )
+        self.client.resolve_identity = Mock(return_value=RiotIdentity(
+            puuid="player-puuid",
+            summoner_id="summoner-id",
+            game_name="Dark Nøwel",
+            tag_line="007",
+            summoner_level=100,
+            profile_icon_id=1,
+        ))
+        self.client._ranking_from_identity = Mock(return_value=player)
+        self.client.fetch_today_matches = Mock(return_value=[match])
+
+        with (
+            patch.object(ScrapingClient, "_load_daily_lp_snapshot_candidates", return_value=[current_candidate]),
+            patch.object(ScrapingClient, "_load_opgg_profile_page", return_value="profile") as load_history,
+            patch.object(ScrapingClient, "_build_today_candidates_from_opgg_page", return_value=[historical_candidate]),
+            patch.object(ScrapingClient, "_append_daily_lp_snapshot"),
+        ):
+            summary = self.client.fetch_today_summary("Dark Nøwel", "007", "EUW1")
+
+        self.assertEqual(summary.lp_change, 19)
+        self.assertEqual(summary.baseline_lp_score, current_score - 19)
+        load_history.assert_called_once()
 
     def test_spectator_v5_uses_puuid_and_handles_not_in_game(self) -> None:
         self.client.resolve_identity = Mock(return_value=RiotIdentity(

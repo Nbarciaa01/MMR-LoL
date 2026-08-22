@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import os
 import hmac
+import copy
+import hashlib
+import json
+import time
 from dataclasses import asdict
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -16,6 +21,7 @@ from .app import _load_dotenv
 from .config import AppConfig, VALID_PLATFORMS, load_config, save_config
 from .lolalytics import LolalyticsClient, LolalyticsError
 from .models import PlayerSummary, RankedEntry
+from .persistence import get_store
 from .riot_client import RiotApiError, RiotClient
 from .scraping_client import ScrapingClient, ScrapingError
 
@@ -27,6 +33,9 @@ STATIC_ROOT = WEB_ROOT / "static"
 ASSET_ROOT = Path(__file__).resolve().parent / "ui" / "img"
 
 app = FastAPI(title="MMR LoL Web", version="0.2.0")
+
+_response_cache: dict[str, tuple[float, dict]] = {}
+_response_cache_lock = Lock()
 
 allowed_hosts = [host.strip() for host in os.getenv("ALLOWED_HOSTS", "").split(",") if host.strip()]
 if allowed_hosts:
@@ -44,6 +53,16 @@ async def security_headers(request, call_next):
         "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
         "script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'"
     )
+    if request.method == "GET" and response.status_code == 200:
+        cache_ttl = {
+            "/api/ranking": 90,
+            "/api/today": 45,
+            "/api/live": 15,
+        }.get(request.url.path)
+        if cache_ttl and request.query_params.get("force_refresh", "false").casefold() != "true":
+            response.headers["Cache-Control"] = (
+                f"public, max-age=0, s-maxage={cache_ttl}, stale-while-revalidate={cache_ttl}"
+            )
     return response
 
 
@@ -147,12 +166,43 @@ def _players() -> list[tuple[str, str]]:
     return [(str(player[0]), str(player[1])) for player in config.ranking_players or []]
 
 
+def _cache_key(view: str, platform: str, source: str, players: list[tuple[str, str]]) -> str:
+    fingerprint = hashlib.sha256(
+        json.dumps(players, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{view}:{platform}:{source}:{fingerprint}"
+
+
+def _get_cached_response(cache_key: str, force_refresh: bool) -> dict | None:
+    if force_refresh:
+        return None
+    store = get_store()
+    if store is not None:
+        return store.get_cached_response(cache_key)
+    now = time.monotonic()
+    with _response_cache_lock:
+        cached = _response_cache.get(cache_key)
+    if cached is None or cached[0] <= now:
+        return None
+    return copy.deepcopy(cached[1])
+
+
+def _set_cached_response(cache_key: str, payload: dict, ttl_seconds: int) -> None:
+    store = get_store()
+    if store is not None:
+        store.set_cached_response(cache_key, payload, ttl_seconds)
+        return
+    with _response_cache_lock:
+        _response_cache[cache_key] = (time.monotonic() + ttl_seconds, copy.deepcopy(payload))
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
         "status": "ok",
         "riot_configured": bool(os.getenv("RIOT_API_KEY", "").strip()),
         "management_enabled": bool(os.getenv("MMRLOL_ADMIN_TOKEN", "").strip()),
+        "database_configured": get_store() is not None,
     }
 
 
@@ -168,6 +218,7 @@ def config() -> dict:
         ],
         "riot_configured": bool(os.getenv("RIOT_API_KEY", "").strip()),
         "management_enabled": bool(os.getenv("MMRLOL_ADMIN_TOKEN", "").strip()),
+        "database_configured": get_store() is not None,
     }
 
 
@@ -199,13 +250,18 @@ def ranking(
     force_refresh: bool = False,
 ) -> dict:
     platform = _platform(platform)
+    players = _players()
+    cache_key = _cache_key("ranking", platform, source, players)
+    cached = _get_cached_response(cache_key, force_refresh)
+    if cached is not None:
+        return cached
     riot = _riot_client() if source in {"auto", "riot"} else None
     if source == "riot" and riot is None:
         raise HTTPException(status_code=503, detail="RIOT_API_KEY no esta configurada en el servidor.")
 
     scraping = ScrapingClient()
     results: list[dict] = []
-    for game_name, tag_line in _players():
+    for game_name, tag_line in players:
         used_source = "riot" if riot is not None else "scraping"
         try:
             if riot is not None:
@@ -240,7 +296,9 @@ def ranking(
         ),
         reverse=True,
     )
-    return {"platform": platform, "players": results}
+    payload = {"platform": platform, "players": results}
+    _set_cached_response(cache_key, payload, 90)
+    return payload
 
 
 @app.get("/api/today")
@@ -250,17 +308,27 @@ def today(
     force_refresh: bool = False,
 ) -> dict:
     platform = _platform(platform)
+    players = _players()
+    cache_key = _cache_key("today", platform, source, players)
+    cached = _get_cached_response(cache_key, force_refresh)
+    if cached is not None:
+        return cached
     riot = _riot_client() if source in {"auto", "riot"} else None
     if source == "riot" and riot is None:
         raise HTTPException(status_code=503, detail="RIOT_API_KEY no esta configurada en el servidor.")
     scraping = ScrapingClient()
     results: list[dict] = []
-    for game_name, tag_line in _players():
+    for game_name, tag_line in players:
         used_source = "riot" if riot is not None else "scraping"
         try:
             if riot is not None:
                 try:
-                    summary = riot.fetch_today_summary(game_name, tag_line, platform)
+                    summary = riot.fetch_today_summary(
+                        game_name,
+                        tag_line,
+                        platform,
+                        force_refresh=force_refresh,
+                    )
                 except RiotApiError:
                     if source == "riot":
                         raise
@@ -281,7 +349,9 @@ def today(
             results.append(
                 {"ok": False, "source": used_source, "riot_id": f"{game_name}#{tag_line}", "error": str(exc)}
             )
-    return {"platform": platform, "players": results}
+    payload = {"platform": platform, "players": results}
+    _set_cached_response(cache_key, payload, 45)
+    return payload
 
 
 @app.get("/api/live")
@@ -290,12 +360,17 @@ def live(
     source: Literal["auto", "riot", "scraping"] = "auto",
 ) -> dict:
     platform = _platform(platform)
+    players = _players()
+    cache_key = _cache_key("live", platform, source, players)
+    cached = _get_cached_response(cache_key, False)
+    if cached is not None:
+        return cached
     riot = _riot_client() if source in {"auto", "riot"} else None
     if source == "riot" and riot is None:
         raise HTTPException(status_code=503, detail="RIOT_API_KEY no esta configurada en el servidor.")
     scraping = ScrapingClient()
     results = []
-    for game_name, tag_line in _players():
+    for game_name, tag_line in players:
         used_source = "riot" if riot is not None else "scraping"
         try:
             if riot is not None:
@@ -313,7 +388,9 @@ def live(
             results.append(
                 {"ok": False, "source": used_source, "riot_id": f"{game_name}#{tag_line}", "error": str(exc)}
             )
-    return {"platform": platform, "players": results}
+    payload = {"platform": platform, "players": results}
+    _set_cached_response(cache_key, payload, 15)
+    return payload
 
 
 @app.get("/api/builds/champions")

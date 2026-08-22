@@ -18,6 +18,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .config import APP_DIR
+from .persistence import get_store
+from .time_utils import app_now, to_app_timezone
 from .models import (
     ChampionPlayStat,
     LiveGameParticipantSummary,
@@ -628,18 +630,23 @@ class ScrapingClient:
         game_name: str,
         tag_line: str,
     ) -> list[_TodayLpBaselineCandidate]:
-        cache_path = next((path for path in self._daily_lp_cache_paths(platform, game_name, tag_line) if path.exists()), None)
-        if cache_path is None:
-            return []
-
-        try:
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-
-        snapshots = payload.get("snapshots")
-        if not isinstance(snapshots, list):
-            return []
+        store = get_store()
+        if store is not None:
+            snapshots = store.load_snapshots(platform, game_name, tag_line)
+        else:
+            cache_path = next(
+                (path for path in self._daily_lp_cache_paths(platform, game_name, tag_line) if path.exists()),
+                None,
+            )
+            if cache_path is None:
+                return []
+            try:
+                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return []
+            snapshots = payload.get("snapshots")
+            if not isinstance(snapshots, list):
+                return []
 
         candidates: list[_TodayLpBaselineCandidate] = []
         for snapshot in snapshots:
@@ -664,7 +671,7 @@ class ScrapingClient:
                     _TodayLpBaselineCandidate(
                         score=int(score),
                         rank_text=rank_text,
-                        observed_at=observed_at.astimezone(),
+                        observed_at=to_app_timezone(observed_at),
                         source="Cache local",
                         wins=int(snapshot["wins"]) if snapshot.get("wins") is not None else None,
                         losses=int(snapshot["losses"]) if snapshot.get("losses") is not None else None,
@@ -684,18 +691,40 @@ class ScrapingClient:
         if lp_score is None or summary.soloq is None:
             return
 
+        game_name = cache_game_name or summary.game_name
+        tag_line = cache_tag_line or summary.tag_line
+        observed_at = app_now()
+        snapshot = {
+            "observed_at": observed_at.isoformat(),
+            "lp_score": lp_score,
+            "rank_text": summary.soloq.display_rank,
+            "wins": int(summary.soloq.wins or 0),
+            "losses": int(summary.soloq.losses or 0),
+            "total_games": int(summary.soloq.total_games or 0),
+        }
+        store = get_store()
+        if store is not None:
+            store.append_snapshot(
+                summary.platform,
+                game_name,
+                tag_line,
+                snapshot,
+                TODAY_LP_SNAPSHOT_DEDUP_SECONDS,
+            )
+            return
+
         cache_path = self._daily_lp_cache_path(
             summary.platform,
-            cache_game_name or summary.game_name,
-            cache_tag_line or summary.tag_line,
+            game_name,
+            tag_line,
         )
         read_cache_path = next(
             (
                 path
                 for path in self._daily_lp_cache_paths(
                     summary.platform,
-                    cache_game_name or summary.game_name,
-                    cache_tag_line or summary.tag_line,
+                    game_name,
+                    tag_line,
                 )
                 if path.exists()
             ),
@@ -711,7 +740,6 @@ class ScrapingClient:
             if isinstance(raw_snapshots, list):
                 snapshots = [snapshot for snapshot in raw_snapshots if isinstance(snapshot, dict)]
 
-        observed_at = datetime.now().astimezone()
         if snapshots:
             last_snapshot = snapshots[-1]
             last_observed_at_raw = str(last_snapshot.get("observed_at", "") or "").strip()
@@ -730,20 +758,11 @@ class ScrapingClient:
                 last_observed_at is not None
                 and normalized_last_score is not None
                 and lp_score == normalized_last_score
-                and abs((observed_at - last_observed_at.astimezone()).total_seconds()) < TODAY_LP_SNAPSHOT_DEDUP_SECONDS
+                and abs((observed_at - to_app_timezone(last_observed_at)).total_seconds()) < TODAY_LP_SNAPSHOT_DEDUP_SECONDS
             ):
                 return
 
-        snapshots.append(
-            {
-                "observed_at": observed_at.isoformat(),
-                "lp_score": lp_score,
-                "rank_text": summary.soloq.display_rank,
-                "wins": int(summary.soloq.wins or 0),
-                "losses": int(summary.soloq.losses or 0),
-                "total_games": int(summary.soloq.total_games or 0),
-            }
-        )
+        snapshots.append(snapshot)
         snapshots = snapshots[-TODAY_LP_SNAPSHOT_LIMIT:]
         try:
             cache_path.write_text(json.dumps({"snapshots": snapshots}, ensure_ascii=True), encoding="utf-8")
@@ -770,7 +789,7 @@ class ScrapingClient:
                 _TodayLpBaselineCandidate(
                     score=score,
                     rank_text=rank_text,
-                    observed_at=observed_at.astimezone(),
+                    observed_at=to_app_timezone(observed_at),
                     source="OP.GG",
                 )
             )
@@ -1010,8 +1029,8 @@ class ScrapingClient:
 
     @staticmethod
     def _format_relative_played_at(played_at: datetime, now_local: datetime | None = None) -> str:
-        current = now_local or datetime.now().astimezone()
-        delta_seconds = max(0, int((current - played_at.astimezone()).total_seconds()))
+        current = now_local or app_now()
+        delta_seconds = max(0, int((current - to_app_timezone(played_at)).total_seconds()))
         if delta_seconds < 45:
             return "Just now"
         if delta_seconds < 90:
@@ -1816,7 +1835,7 @@ class ScrapingClient:
         if not normalized:
             return None
 
-        current = now_local or datetime.now().astimezone()
+        current = now_local or app_now()
         if normalized in {"just now", "moments ago"}:
             return current
         if normalized in {"a minute ago", "an minute ago", "1 minute ago"}:
@@ -1845,7 +1864,7 @@ class ScrapingClient:
     def _load_recent_matches_from_leagueofgraphs(self, page: str) -> list[MatchSummary]:
         matches: list[MatchSummary] = []
         row_pattern = re.compile(r"<tr class=\"[^\"]*\">(.*?)</tr>", re.IGNORECASE | re.DOTALL)
-        now_local = datetime.now().astimezone()
+        now_local = app_now()
         for row in row_pattern.findall(page):
             match_id_match = re.search(r"/match/[^/]+/(?P<match_id>\d+)#participant\d+", row, re.IGNORECASE)
             champion_id_match = re.search(r'class="champion-(?P<champion_id>\d+)-48\s+"', row, re.IGNORECASE)
@@ -1916,7 +1935,7 @@ class ScrapingClient:
             include_matches=True,
             force_refresh=force_refresh,
         )
-        now_local = datetime.now().astimezone()
+        now_local = app_now()
         start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         today_matches: list[MatchSummary] = []
         for match in profile.matches:
@@ -1930,7 +1949,7 @@ class ScrapingClient:
                 continue
             if played_at.tzinfo is None:
                 played_at = played_at.replace(tzinfo=timezone.utc)
-            if played_at.astimezone() < start_of_day:
+            if to_app_timezone(played_at) < start_of_day:
                 continue
             today_matches.append(match)
         today_matches.sort(key=lambda match: match.played_at_iso or "", reverse=True)
@@ -2717,7 +2736,7 @@ class ScrapingClient:
                 today_matches=display_today_matches,
             )
 
-        now_local = datetime.now().astimezone()
+        now_local = app_now()
         start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         candidates = self._load_daily_lp_snapshot_candidates(platform, game_name, tag_line)
 
@@ -2755,7 +2774,7 @@ class ScrapingClient:
                 continue
             if played_at.tzinfo is None:
                 played_at = played_at.replace(tzinfo=timezone.utc)
-            localized_played_at = played_at.astimezone()
+            localized_played_at = to_app_timezone(played_at)
             if first_match_at is None or localized_played_at < first_match_at:
                 first_match_at = localized_played_at
 

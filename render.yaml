@@ -15,5 +15,9 @@ services:
         sync: false
       - key: MMRLOL_DATA_DIR
         value: /var/lib/mmrlol
+      - key: MMRLOL_TIMEZONE
+        value: Europe/Madrid
+      - key: DATABASE_URL
+        sync: false
       - key: ALLOWED_HOSTS
         sync: false

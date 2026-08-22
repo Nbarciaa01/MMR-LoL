@@ -1,5 +1,6 @@
 PySide6>=6.8
 requests>=2.32
+tzdata>=2025.2
 PyInstaller>=6.10
 fastapi>=0.115
 uvicorn[standard]>=0.30

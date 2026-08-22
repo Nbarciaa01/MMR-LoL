@@ -5,6 +5,8 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .persistence import get_store
+
 
 APP_DIR = Path(os.getenv("MMRLOL_DATA_DIR") or os.getenv("APPDATA", Path.home())) / "LoLScout"
 CONFIG_PATH = APP_DIR / "config.json"
@@ -66,6 +68,15 @@ class AppConfig:
 
 
 def load_config() -> AppConfig:
+    store = get_store()
+    if store is not None:
+        data = store.load_config()
+        if data is not None:
+            return AppConfig(
+                default_platform=data.get("default_platform", "EUW1"),
+                ranking_players=data.get("ranking_players"),
+            )
+
     if not CONFIG_PATH.exists():
         return AppConfig()
 
@@ -81,6 +92,11 @@ def load_config() -> AppConfig:
 
 
 def save_config(config: AppConfig) -> None:
+    store = get_store()
+    if store is not None:
+        store.save_config(config.default_platform, [list(player) for player in config.ranking_players or []])
+        return
+
     APP_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(
         json.dumps(asdict(config), indent=2),

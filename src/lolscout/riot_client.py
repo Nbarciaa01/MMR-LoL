@@ -20,7 +20,8 @@ from .models import (
     RankedEntry,
     TodayLpSummary,
 )
-from .scraping_client import ScrapingClient, estimate_mmr
+from .scraping_client import ScrapingClient, ScrapingError, estimate_mmr
+from .time_utils import app_now, to_app_timezone
 
 
 PLATFORM_TO_REGIONAL_ROUTE = {
@@ -277,7 +278,7 @@ class RiotClient:
             or info.get("gameCreation", 0)
             or 0
         )
-        played_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).astimezone()
+        played_at = to_app_timezone(datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc))
         kills = int(participant.get("kills", 0) or 0)
         deaths = int(participant.get("deaths", 0) or 0)
         assists = int(participant.get("assists", 0) or 0)
@@ -311,7 +312,7 @@ class RiotClient:
     ) -> list[MatchSummary]:
         platform = platform.strip().upper()
         regional = self.regional_route(platform)
-        now_local = now_local or datetime.now().astimezone()
+        now_local = now_local or app_now()
         start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         query = urlencode(
             {
@@ -344,13 +345,20 @@ class RiotClient:
             summary = self._match_summary(detail, puuid, now_local)
             if summary is None:
                 continue
-            played_at = datetime.fromisoformat(summary.played_at_iso or "").astimezone()
+            played_at = to_app_timezone(datetime.fromisoformat(summary.played_at_iso or ""))
             if played_at >= start_of_day:
                 matches.append(summary)
         matches.sort(key=lambda match: match.played_at_iso or "", reverse=True)
         return matches
 
-    def fetch_today_summary(self, game_name: str, tag_line: str, platform: str) -> TodayLpSummary:
+    def fetch_today_summary(
+        self,
+        game_name: str,
+        tag_line: str,
+        platform: str,
+        *,
+        force_refresh: bool = False,
+    ) -> TodayLpSummary:
         platform = platform.strip().upper()
         identity = self.resolve_identity(platform, game_name, tag_line)
         player = self._ranking_from_identity(platform, identity)
@@ -366,11 +374,56 @@ class RiotClient:
                 today_matches=matches[:5],
             )
 
-        now_local = datetime.now().astimezone()
+        now_local = app_now()
         start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         candidates = tracker._load_daily_lp_snapshot_candidates(platform, game_name, tag_line)
-        today_candidates = [candidate for candidate in candidates if candidate.observed_at >= start_of_day]
-        baseline = min(today_candidates, key=lambda candidate: candidate.observed_at, default=None)
+        if identity.game_name.casefold() != game_name.casefold() or identity.tag_line.casefold() != tag_line.casefold():
+            candidates.extend(
+                tracker._load_daily_lp_snapshot_candidates(platform, identity.game_name, identity.tag_line)
+            )
+
+        current_total_games = player.soloq.total_games if player.soloq is not None else None
+        expected_baseline_total = (
+            max(0, current_total_games - len(matches))
+            if current_total_games is not None and matches
+            else None
+        )
+        has_game_baseline = expected_baseline_total is not None and any(
+            candidate.total_games == expected_baseline_total for candidate in candidates
+        )
+        if matches and not has_game_baseline:
+            try:
+                opgg_page = tracker._load_opgg_profile_page(
+                    platform,
+                    identity.game_name,
+                    identity.tag_line,
+                    force_refresh=force_refresh,
+                )
+            except ScrapingError:
+                opgg_page = None
+            if opgg_page:
+                candidates.extend(tracker._build_today_candidates_from_opgg_page(opgg_page))
+
+        first_match_at = None
+        for match in matches:
+            if not match.played_at_iso:
+                continue
+            try:
+                played_at = to_app_timezone(datetime.fromisoformat(match.played_at_iso))
+            except ValueError:
+                continue
+            if first_match_at is None or played_at < first_match_at:
+                first_match_at = played_at
+
+        baseline = tracker._select_today_baseline_candidate(
+            candidates,
+            start_of_day,
+            now_local,
+            first_match_at=first_match_at,
+            current_total_games=current_total_games,
+            today_match_count=len(matches),
+            current_lp_score=current_score,
+        )
         tracker._append_daily_lp_snapshot(player, cache_game_name=game_name, cache_tag_line=tag_line)
         if baseline is None:
             return TodayLpSummary(

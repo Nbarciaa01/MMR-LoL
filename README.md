@@ -135,6 +135,12 @@ RIOT_API_KEY=RGAPI-tu-clave
 
 La web queda disponible en `http://127.0.0.1:8000`. La documentacion de sus endpoints esta en `http://127.0.0.1:8000/docs`.
 
+La zona horaria usada para calcular las partidas de Hoy es configurable y por defecto usa Madrid:
+
+```env
+MMRLOL_TIMEZONE=Europe/Madrid
+```
+
 Para publicar el proyecto hace falta desplegar este servidor en un proveedor que admita Python, guardar `RIOT_API_KEY` como secreto del proveedor y solicitar a Riot una clave de produccion antes de abrir el acceso al publico.
 
 ## Configuracion
@@ -164,6 +170,18 @@ MMRLOL_ADMIN_TOKEN=un-secreto-largo-y-aleatorio
 
 Cuando Riot esta configurado, los Riot IDs se validan antes de guardarlos. La configuracion se conserva en `MMRLOL_DATA_DIR` si esa variable esta definida.
 
+### Persistencia web
+
+En hosting serverless o con disco efimero, configura PostgreSQL para conservar jugadores, snapshots diarios y cache compartida:
+
+```env
+DATABASE_URL=postgresql://usuario:password@host/base?sslmode=require
+```
+
+La aplicacion crea automaticamente las tablas `mmrlol_config`, `mmrlol_lp_snapshots` y `mmrlol_response_cache`. Sin `DATABASE_URL` mantiene el almacenamiento local anterior.
+
+Las respuestas se cachean durante 90 segundos para Ranking, 45 segundos para Hoy y 15 segundos para En partida. En plataformas con CDN tambien se publican directivas `s-maxage` equivalentes.
+
 ### Despliegue
 
 El repositorio incluye `Dockerfile` y `render.yaml`. El despliegue necesita estos secretos en el proveedor:
@@ -172,6 +190,8 @@ El repositorio incluye `Dockerfile` y `render.yaml`. El despliegue necesita esto
 - `MMRLOL_ADMIN_TOKEN`
 - `RIOT_VERIFICATION_TEXT`, cuando Riot entregue el contenido de verificacion
 - `ALLOWED_HOSTS`, con el dominio publico y el dominio asignado por el proveedor
+- `DATABASE_URL`, para conservar configuracion y snapshots fuera del contenedor
+- `MMRLOL_TIMEZONE`, normalmente `Europe/Madrid`
 
 La aplicacion expone `/api/health`, `/privacy`, `/terms` y `/riot.txt`. El borrador para registrar el producto esta en `docs/riot-production-application.md`.
 
