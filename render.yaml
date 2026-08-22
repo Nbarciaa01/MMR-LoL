@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: mmrlol-web
+    runtime: docker
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: RIOT_API_KEY
+        sync: false
+      - key: MMRLOL_ADMIN_TOKEN
+        sync: false
+      - key: RIOT_VERIFICATION_TEXT
+        sync: false
+      - key: MMRLOL_DATA_DIR
+        value: /var/lib/mmrlol
+      - key: ALLOWED_HOSTS
+        sync: false
+    disk:
+      name: mmrlol-data
+      mountPath: /var/lib/mmrlol
+      sizeGB: 1

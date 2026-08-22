@@ -6,12 +6,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "LoLScout"
+APP_DIR = Path(os.getenv("MMRLOL_DATA_DIR") or os.getenv("APPDATA", Path.home())) / "LoLScout"
 CONFIG_PATH = APP_DIR / "config.json"
-DEFAULT_API_KEY = ""
-LEGACY_DEFAULT_API_KEYS = {
-    "RGAPI-b63d0dae-bd02-4309-90bb-c8277ea0fbee",
-    "RGAPI-1908837d-a64c-4245-b6c9-41df41bccebe",
+VALID_PLATFORMS = {
+    "EUW1",
+    "EUN1",
+    "NA1",
+    "KR",
+    "BR1",
+    "LA1",
+    "LA2",
+    "OC1",
+    "TR1",
+    "RU",
+    "ME1",
 }
 DEFAULT_PLAYERS = [
     ("Dark Nøwel", "007"),
@@ -25,19 +33,15 @@ DEFAULT_PLAYERS = [
     ("StephanieBullet", "EUW"),
     ("RoZaNiAs", "EUW"),
 ]
-DEFAULT_PLAYER_SET = {(game_name.casefold(), tag_line.casefold()) for game_name, tag_line in DEFAULT_PLAYERS}
-
-
 @dataclass
 class AppConfig:
-    api_key: str = DEFAULT_API_KEY
     default_platform: str = "EUW1"
-    lol_game_path: str = ""
     ranking_players: list[list[str]] | list[tuple[str, str]] | None = None
 
     def __post_init__(self) -> None:
-        if not self.api_key or self.api_key in LEGACY_DEFAULT_API_KEYS:
-            self.api_key = DEFAULT_API_KEY
+        self.default_platform = str(self.default_platform or "EUW1").strip().upper()
+        if self.default_platform not in VALID_PLATFORMS:
+            self.default_platform = "EUW1"
 
         if self.ranking_players is None:
             self.ranking_players = [list(player) for player in DEFAULT_PLAYERS]
@@ -58,12 +62,6 @@ class AppConfig:
             seen_players.add(lookup_key)
             sanitized.append([game_name, tag_line])
 
-        for game_name, tag_line in DEFAULT_PLAYERS:
-            lookup_key = (game_name.casefold(), tag_line.casefold())
-            if lookup_key in DEFAULT_PLAYER_SET and lookup_key not in seen_players:
-                sanitized.append([game_name, tag_line])
-                seen_players.add(lookup_key)
-
         self.ranking_players = sanitized or [list(player) for player in DEFAULT_PLAYERS]
 
 
@@ -77,9 +75,7 @@ def load_config() -> AppConfig:
         return AppConfig()
 
     return AppConfig(
-        api_key=data.get("api_key", DEFAULT_API_KEY),
         default_platform=data.get("default_platform", "EUW1"),
-        lol_game_path=data.get("lol_game_path", ""),
         ranking_players=data.get("ranking_players"),
     )
 

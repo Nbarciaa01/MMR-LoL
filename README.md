@@ -1,6 +1,6 @@
 # MMR LoL
 
-Aplicacion de escritorio para Windows orientada a seguir un grupo cerrado de jugadores de League of Legends desde una sola interfaz.
+Aplicacion de escritorio y web orientada a seguir un grupo cerrado de jugadores de League of Legends desde una sola interfaz.
 
 La app combina varias fuentes externas para mostrar:
 
@@ -9,7 +9,7 @@ La app combina varias fuentes externas para mostrar:
 - builds y matchups desde Lolalytics
 - partidas activas en vivo
 - galeria visual de jugadores
-- enlaces rapidos y soporte para spectate
+- enlaces rapidos a perfiles y partidas en vivo
 
 El proyecto esta construido con `Python` + `PySide6` y se distribuye como ejecutable autosuficiente `MMRlol.exe`.
 
@@ -26,7 +26,7 @@ Incluye:
 - ultimas partidas jugadas hoy
 - deteccion de partidas de **SoloQ** desde las `00:00` locales
 
-La logica usa snapshots locales y, cuando hay API de Riot disponible, prioriza Riot para mejorar la precision del calculo.
+La logica usa snapshots locales y datos obtenidos mediante scraping de fuentes publicas.
 
 ### 2. Ranking
 
@@ -62,7 +62,7 @@ La pestana **En partida** detecta partidas activas y muestra:
 - datos resumidos del jugador
 - composicion de equipos
 
-Si la configuracion esta completa, la app tambien puede lanzar el modo **spectate**.
+Tambien enlaza a la vista publica de partida en vivo cuando la fuente la expone.
 
 ### 5. Builds
 
@@ -82,7 +82,6 @@ Esta pensada como una herramienta rapida de consulta, no como sustituto completo
 
 La app mezcla varias fuentes para cubrir casos distintos:
 
-- `Riot API`: identidad de cuenta, ranked mas fiable, live game, spectate y parte del calculo diario
 - `LeagueOfGraphs`: perfil, historial reciente, habitos de SoloQ y datos de apoyo
 - `OP.GG`: ranked, historico de LP y perfiles publicos
 - `U.GG`: apoyo para algunos datos agregados
@@ -116,6 +115,28 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Version web
+
+La migracion web reutiliza la logica existente y sirve tanto la API como la interfaz desde el mismo proceso. La clave de Riot solo se lee en el servidor y nunca se entrega al navegador.
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements-web.txt
+Copy-Item .env.example .env
+python -m uvicorn src.lolscout.web_app:app --reload --host 127.0.0.1 --port 8000
+```
+
+Configura en `.env` una clave nueva de desarrollo mientras construyes el prototipo:
+
+```env
+RIOT_API_KEY=RGAPI-tu-clave
+```
+
+La web queda disponible en `http://127.0.0.1:8000`. La documentacion de sus endpoints esta en `http://127.0.0.1:8000/docs`.
+
+Para publicar el proyecto hace falta desplegar este servidor en un proveedor que admita Python, guardar `RIOT_API_KEY` como secreto del proveedor y solicitar a Riot una clave de produccion antes de abrir el acceso al publico.
+
 ## Configuracion
 
 La app guarda su configuracion en:
@@ -126,32 +147,33 @@ Entre otras cosas se almacenan:
 
 - plataforma por defecto
 - jugadores del grupo
-- API Key de Riot
-- ruta local de League of Legends para spectate
 
-## Riot API: cuando hace falta
+## Riot API y scraping publico
 
-La app puede funcionar parcialmente sin API Key, pero no con la misma precision.
+La version web usa la API oficial de Riot para Ranking, Hoy y En partida cuando `RIOT_API_KEY` esta configurada. Match-V5 obtiene las partidas SoloQ del dia y Spectator-V5 consulta las partidas activas. Si Riot no esta disponible, el modo automatico recurre al sistema anterior.
 
-### Sin Riot API
+Las claves de desarrollo de Riot caducan cada 24 horas. No deben incluirse en JavaScript, commits, capturas ni URLs.
 
-Siguen funcionando o pueden funcionar:
+### Gestionar jugadores
 
-- ranking basico
-- builds
-- parte del scouting visual
-- consulta publica de perfiles
+La web permite anadir, editar y eliminar Riot IDs desde el boton de ajustes. La operacion requiere `MMRLOL_ADMIN_TOKEN`, que debe ser una cadena aleatoria larga y distinta de la clave de Riot.
 
-### Con Riot API
+```env
+MMRLOL_ADMIN_TOKEN=un-secreto-largo-y-aleatorio
+```
 
-Mejora o habilita:
+Cuando Riot esta configurado, los Riot IDs se validan antes de guardarlos. La configuracion se conserva en `MMRLOL_DATA_DIR` si esa variable esta definida.
 
-- mayor precision en la pestana **Hoy**
-- live game mas fiable
-- spectate
-- deteccion de maestria y algunos detalles adicionales
+### Despliegue
 
-En la practica, si quieres usar la app "al 100%", conviene configurar una API Key valida.
+El repositorio incluye `Dockerfile` y `render.yaml`. El despliegue necesita estos secretos en el proveedor:
+
+- `RIOT_API_KEY`
+- `MMRLOL_ADMIN_TOKEN`
+- `RIOT_VERIFICATION_TEXT`, cuando Riot entregue el contenido de verificacion
+- `ALLOWED_HOSTS`, con el dominio publico y el dominio asignado por el proveedor
+
+La aplicacion expone `/api/health`, `/privacy`, `/terms` y `/riot.txt`. El borrador para registrar el producto esta en `docs/riot-production-application.md`.
 
 ## Discord y avatares
 
@@ -202,7 +224,7 @@ src/
     app.py
     config.py
     models.py
-    riot_api.py
+    scraping_client.py
     lolalytics.py
     ui/
       main_window.py
@@ -218,7 +240,7 @@ scripts/
 - `main.py`: punto de entrada
 - `src/lolscout/app.py`: arranque de la app y carga de recursos
 - `src/lolscout/config.py`: lectura y guardado de configuracion
-- `src/lolscout/riot_api.py`: integracion con Riot y scraping auxiliar
+- `src/lolscout/scraping_client.py`: cliente de scraping de perfiles y ranking
 - `src/lolscout/lolalytics.py`: cliente y parser de builds
 - `src/lolscout/ui/main_window.py`: interfaz principal
 - `src/lolscout/ui/theme.py`: estilos globales
@@ -229,13 +251,13 @@ scripts/
 
 - depende de servicios externos y de su HTML/API publica
 - algunos calculos publicos pueden variar si una fuente tarda en refrescar
-- el modo spectate requiere API Key y ruta valida de League
+- los enlaces de partida en vivo dependen de los datos publicos disponibles
 - el build actual espera credenciales de Discord si quieres empaquetar avatares
 
 ## Uso rapido
 
 1. Abre la app.
-2. Configura jugadores, plataforma y, si la tienes, API Key de Riot.
+2. Configura jugadores y plataforma.
 3. Actualiza **Hoy** para calcular el balance diario.
 4. Actualiza **Ranking** para refrescar elo, LP y MMR.
 5. Consulta **Builds** y **En partida** segun necesites.

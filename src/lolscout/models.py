@@ -151,17 +151,6 @@ class LiveGamePlayerDetails:
 
 
 @dataclass
-class SpectatorSession:
-    platform_id: str
-    game_id: int
-    encryption_key: str
-
-    @property
-    def observer_host(self) -> str:
-        return f"spectator.{self.platform_id.lower()}.lol.riotgames.com:80"
-
-
-@dataclass
 class LiveGameParticipantSummary:
     game_name: str
     tag_line: str
@@ -173,8 +162,6 @@ class LiveGameParticipantSummary:
     role: str = "UNKNOWN"
     game: LiveGameSummary | None = None
     status_text: str = ""
-    spectate_url: str | None = None
-    spectator: SpectatorSession | None = None
     participants: list[LiveGamePlayerDetails] = field(default_factory=list)
 
 

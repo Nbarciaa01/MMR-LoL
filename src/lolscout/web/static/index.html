@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090c12">
+    <title>MMR LoL</title>
+    <meta name="description" content="Ranking, LP diarios, partidas en vivo y builds del grupo.">
+    <link rel="icon" href="/assets/mmr-logo-app.png">
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#ranking" aria-label="MMR LoL">
+        <img src="/assets/mmr-logo-app.png" alt="">
+        <span>MMR <b>LoL</b></span>
+      </a>
+      <nav class="tabs" aria-label="Secciones">
+        <button class="tab is-active" data-view="ranking">Ranking</button>
+        <button class="tab" data-view="today">Hoy</button>
+        <button class="tab" data-view="live">En partida</button>
+        <button class="tab" data-view="builds">Builds</button>
+      </nav>
+      <div class="controls">
+        <label class="sr-only" for="platform">Servidor</label>
+        <select id="platform" aria-label="Servidor"></select>
+        <button id="settings" class="icon-button" title="Gestionar jugadores" aria-label="Gestionar jugadores">⚙</button>
+        <button id="refresh" class="icon-button" title="Actualizar" aria-label="Actualizar">↻</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="overview">
+        <div>
+          <p class="eyebrow">El grupo, de un vistazo</p>
+          <h1 id="view-title">Ranking SoloQ</h1>
+          <p id="view-description">Comparativa de rango, LP y MMR estimado.</p>
+        </div>
+        <div class="api-state" id="api-state"><span></span><strong>Comprobando Riot API</strong></div>
+      </section>
+
+      <section id="content" class="content" aria-live="polite">
+        <div class="loading"><span></span><p>Cargando el grupo…</p></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>MMR LoL no está respaldado por Riot Games.</span>
+      <nav><a href="/privacy">Privacidad</a><a href="/terms">Términos</a></nav>
+    </footer>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <form id="settings-form" method="dialog">
+        <header><div><p class="eyebrow">Administración</p><h2>Jugadores del grupo</h2></div><button type="button" class="dialog-close" aria-label="Cerrar">×</button></header>
+        <label class="field"><span>Token de administración</span><input id="admin-token" type="password" autocomplete="current-password" required></label>
+        <label class="field"><span>Servidor por defecto</span><select id="settings-platform"></select></label>
+        <div class="players-editor"><div class="editor-head"><strong>Riot IDs</strong><button type="button" id="add-player">+ Añadir</button></div><div id="player-fields"></div></div>
+        <p id="settings-message" class="form-message" role="status"></p>
+        <footer><button type="button" class="secondary dialog-close">Cancelar</button><button type="submit" class="primary">Guardar cambios</button></footer>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import random
 import re
-import tempfile
 import sys
 from threading import Lock, Thread
 import requests
@@ -38,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import AppConfig, load_config, save_config
+from ..config import APP_DIR, load_config, save_config
 from ..lolalytics import LolalyticsClient
 from ..models import (
     LiveGameParticipantSummary,
@@ -51,15 +50,27 @@ from ..models import (
     LolalyticsSkillOrderRow,
     PlayerSummary,
     RankedEntry,
-    SpectatorSession,
     TodayLpSummary,
 )
-from ..riot_api import RiotApiClient
+from ..scraping_client import ScrapingClient
 from .theme import APP_STYLESHEET, build_palette
 
 
 SETTINGS_USERNAME = "topon01"
 SETTINGS_PASSWORD = "firewyvern01"
+DIAGNOSTIC_PATH = APP_DIR / "diagnostico.txt"
+_DIAGNOSTIC_LOCK = Lock()
+
+
+def _append_diagnostic(message: str) -> None:
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        with _DIAGNOSTIC_LOCK:
+            with DIAGNOSTIC_PATH.open("a", encoding="utf-8") as diagnostic_file:
+                diagnostic_file.write(f"[{timestamp}] {message}\n")
+    except OSError:
+        return
 
 
 PLATFORMS = [
@@ -282,6 +293,12 @@ PREFERRED_LOADING_SKINS = {
     "syndra": "SKT T1 Syndra",
     "vayne": "Firecracker Vayne Prestige Edition",
 }
+PREFERRED_PLAYER_FEATURED_CHAMPIONS = {
+    "rozanias#euw": (777, "Yone"),
+}
+PREFERRED_PLAYER_FEATURED_MASTERY = {
+    "rozanias#euw": (25, 285_088),
+}
 PREFERRED_PLAYER_LOADING_SKINS = {
     "guille016#euw": "Empyrean Akali",
     "daorru#euw": "Nurse Akali",
@@ -289,7 +306,7 @@ PREFERRED_PLAYER_LOADING_SKINS = {
     "hallooooo#k1tty": "Chosen of the Wolf Katarina",
     "luda png#euw": "Blood Moon Aatrox",
     "ludapng#euw": "Blood Moon Aatrox",
-    "rozanias#euw": "Battle Queen Katarina",
+    "rozanias#euw": "High Noon Yone",
     "eltet1t4s#euw": "Dragon Master Swain",
     "redsh19#1971": "Spirit Blossom Sett",
 }
@@ -354,7 +371,7 @@ class PlayerShowcaseData:
     art_url: str | None
 
 
-def _prefetch_player_visual_assets(summaries: list[PlayerSummary]) -> None:
+def _prefetch_player_visual_assets(summaries: list[PlayerSummary], include_loading_screens: bool = True) -> None:
     tasks: list[tuple[str, object]] = []
     seen_champions: set[int] = set()
     seen_champion_loadscreens: set[int] = set()
@@ -369,13 +386,14 @@ def _prefetch_player_visual_assets(summaries: list[PlayerSummary]) -> None:
             if champion.champion_id > 0 and champion.champion_id not in seen_champions:
                 seen_champions.add(champion.champion_id)
                 tasks.append(("champion", champion.champion_id))
-        featured_champion_id = _featured_champion_id(summary)
-        if featured_champion_id > 0 and featured_champion_id not in seen_champion_loadscreens:
-            champion_name = _get_champion_display_name(featured_champion_id)
-            if champion_name:
-                seen_champion_loadscreens.add(featured_champion_id)
-                preferred_skin = _get_player_loading_skin(summary, champion_name)
-                tasks.append(("champion_loadscreen", (champion_name, preferred_skin, featured_champion_id)))
+        if include_loading_screens:
+            featured_champion_id = _featured_champion_id(summary)
+            if featured_champion_id > 0 and featured_champion_id not in seen_champion_loadscreens:
+                champion_name = _get_champion_display_name(featured_champion_id)
+                if champion_name:
+                    seen_champion_loadscreens.add(featured_champion_id)
+                    preferred_skin = _get_player_loading_skin(summary, champion_name)
+                    tasks.append(("champion_loadscreen", (champion_name, preferred_skin, featured_champion_id)))
 
     if not tasks:
         return
@@ -401,29 +419,41 @@ class RankingWorker(QObject):
     failed = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, api_key: str, platform: str, players: list[tuple[str, str]], force_refresh: bool = False) -> None:
+    def __init__(self, platform: str, players: list[tuple[str, str]], force_refresh: bool = False) -> None:
         super().__init__()
-        self.api_key = api_key
         self.platform = platform
         self.players = players
         self.force_refresh = force_refresh
 
     def _fetch_ranking_player(self, game_name: str, tag_line: str) -> PlayerSummary:
-        client = RiotApiClient(self.api_key, timeout=12)
+        client: ScrapingClient | None = None
         try:
+            client = ScrapingClient(timeout=12)
             return client.fetch_player_ranking(
                 game_name=game_name,
                 tag_line=tag_line,
                 platform=self.platform,
                 force_refresh=self.force_refresh,
             )
-        except Exception:
+        except Exception as exc:
+            _append_diagnostic(f"Ranking {game_name}#{tag_line}: {type(exc).__name__}: {exc}")
+            cached = None
+            if client is not None:
+                cached = client.fetch_cached_player_ranking(
+                    game_name=game_name,
+                    tag_line=tag_line,
+                    platform=self.platform,
+                    max_age_seconds=None,
+                )
+            if cached is not None:
+                return cached
             return PlayerSummary(
                 game_name=game_name,
                 tag_line=tag_line,
                 summoner_level=0,
                 profile_icon_id=0,
                 platform=self.platform,
+                opgg_url=ScrapingClient.build_opgg_profile_url(self.platform, game_name, tag_line),
                 ranked_available=False,
             )
 
@@ -435,7 +465,7 @@ class RankingWorker(QObject):
                 return
 
             summaries: list[PlayerSummary | None] = [None] * total
-            max_workers = min(6, total)
+            max_workers = min(4, total)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {
                     executor.submit(self._fetch_ranking_player, game_name, tag_line): (index, game_name, tag_line)
@@ -453,7 +483,7 @@ class RankingWorker(QObject):
 
         resolved_summaries = [summary for summary in summaries if summary is not None]
         self.progress.emit("Descargando iconos del ranking...")
-        _prefetch_player_visual_assets(resolved_summaries)
+        _prefetch_player_visual_assets(resolved_summaries, include_loading_screens=False)
         self.progress.emit("Procesando ranking...")
         self.finished.emit(resolved_summaries)
 
@@ -463,16 +493,16 @@ class TodayLpWorker(QObject):
     failed = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, api_key: str, platform: str, players: list[tuple[str, str]], force_refresh: bool = False) -> None:
+    def __init__(self, platform: str, players: list[tuple[str, str]], force_refresh: bool = False) -> None:
         super().__init__()
-        self.api_key = api_key
         self.platform = platform
         self.players = players
         self.force_refresh = force_refresh
 
     def _fetch_today_player(self, game_name: str, tag_line: str) -> TodayLpSummary:
-        client = RiotApiClient(self.api_key, timeout=12)
+        client: ScrapingClient | None = None
         try:
+            client = ScrapingClient(timeout=12)
             return client.fetch_player_today_lp(
                 game_name=game_name,
                 tag_line=tag_line,
@@ -480,6 +510,26 @@ class TodayLpWorker(QObject):
                 force_refresh=self.force_refresh,
             )
         except Exception as exc:
+            _append_diagnostic(f"Hoy {game_name}#{tag_line}: {type(exc).__name__}: {exc}")
+            cached = None
+            if client is not None:
+                cached = client.fetch_cached_player_ranking(
+                    game_name=game_name,
+                    tag_line=tag_line,
+                    platform=self.platform,
+                    max_age_seconds=None,
+                )
+            if cached is not None:
+                current_rank_text = (
+                    cached.soloq.display_rank
+                    if cached.soloq is not None
+                    else ("Sin SoloQ" if cached.ranked_available else "Sin datos")
+                )
+                return TodayLpSummary(
+                    player=cached,
+                    current_rank_text=current_rank_text,
+                    baseline_note=f"No se pudo recalcular hoy; se muestra el ultimo ranking guardado: {exc}",
+                )
             return TodayLpSummary(
                 player=PlayerSummary(
                     game_name=game_name,
@@ -487,9 +537,10 @@ class TodayLpWorker(QObject):
                     summoner_level=0,
                     profile_icon_id=0,
                     platform=self.platform,
+                    opgg_url=ScrapingClient.build_opgg_profile_url(self.platform, game_name, tag_line),
                     ranked_available=False,
                 ),
-                current_rank_text="No disponible",
+                current_rank_text="Sin datos",
                 baseline_note=f"No se pudo calcular hoy: {exc}",
             )
 
@@ -501,7 +552,7 @@ class TodayLpWorker(QObject):
                 return
 
             summaries: list[TodayLpSummary | None] = [None] * total
-            with ThreadPoolExecutor(max_workers=min(4, total)) as executor:
+            with ThreadPoolExecutor(max_workers=min(3, total)) as executor:
                 future_map = {
                     executor.submit(self._fetch_today_player, game_name, tag_line): (index, game_name, tag_line)
                     for index, (game_name, tag_line) in enumerate(self.players)
@@ -519,7 +570,7 @@ class TodayLpWorker(QObject):
         resolved_summaries = [summary for summary in summaries if summary is not None]
         players = [summary.player for summary in resolved_summaries]
         self.progress.emit("Preparando tarjetas de hoy...")
-        _prefetch_player_visual_assets(players)
+        _prefetch_player_visual_assets(players, include_loading_screens=False)
         self.finished.emit(resolved_summaries)
 
 
@@ -528,21 +579,21 @@ class LiveGameWorker(QObject):
     failed = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, api_key: str, platform: str, players: list[tuple[str, str]]) -> None:
+    def __init__(self, platform: str, players: list[tuple[str, str]]) -> None:
         super().__init__()
-        self.api_key = api_key
         self.platform = platform
         self.players = players
 
     def _fetch_live_player(self, game_name: str, tag_line: str) -> LiveGameParticipantSummary:
-        client = RiotApiClient(self.api_key, timeout=12)
         try:
+            client = ScrapingClient(timeout=12)
             return client.fetch_live_game_summary(
                 game_name=game_name,
                 tag_line=tag_line,
                 platform=self.platform,
             )
         except Exception as exc:
+            _append_diagnostic(f"En partida {game_name}#{tag_line}: {type(exc).__name__}: {exc}")
             return LiveGameParticipantSummary(
                 game_name=game_name,
                 tag_line=tag_line,
@@ -1050,7 +1101,7 @@ class RankingRow(QFrame):
         name_col.addLayout(title_row)
         name_col.addWidget(meta_label)
 
-        soloq_text = summary.soloq.display_rank if summary.soloq else ("No disponible" if not summary.ranked_available else "Sin rango")
+        soloq_text = summary.soloq.display_rank if summary.soloq else ("Sin datos" if not summary.ranked_available else "Sin rango")
         mmr_text = str(summary.estimated_mmr) if summary.estimated_mmr is not None else "N/D"
         winrate_text = f"{summary.global_winrate:.1f}%" if summary.global_winrate is not None else "N/D"
         games_total = summary.ranked_games
@@ -2289,6 +2340,24 @@ def _get_player_loading_skin(summary: PlayerSummary, champion_name: str) -> str:
         return PREFERRED_LOADING_SKINS.get(champion_name.casefold(), "").strip()
 
 
+def _get_player_featured_champion_override(summary: PlayerSummary) -> tuple[int, str]:
+        lookup_key = f"{summary.game_name}#{summary.tag_line}".casefold()
+        player_override = PREFERRED_PLAYER_FEATURED_CHAMPIONS.get(lookup_key)
+        if player_override is not None:
+            return player_override
+        compact_lookup_key = re.sub(r"\s+", "", lookup_key)
+        return PREFERRED_PLAYER_FEATURED_CHAMPIONS.get(compact_lookup_key, (0, ""))
+
+
+def _get_player_featured_mastery_override(summary: PlayerSummary) -> tuple[int | None, int | None]:
+        lookup_key = f"{summary.game_name}#{summary.tag_line}".casefold()
+        player_override = PREFERRED_PLAYER_FEATURED_MASTERY.get(lookup_key)
+        if player_override is not None:
+            return player_override
+        compact_lookup_key = re.sub(r"\s+", "", lookup_key)
+        return PREFERRED_PLAYER_FEATURED_MASTERY.get(compact_lookup_key, (None, None))
+
+
 def _get_communitydragon_skin_loading_url(
     champion_id: int,
     skin_name: str,
@@ -2347,9 +2416,10 @@ def _get_player_showcase_data(summary: PlayerSummary, allow_network: bool = True
             return cached
 
         featured_champion_id = _featured_champion_id(summary)
+        _, featured_name_override = _get_player_featured_champion_override(summary)
         featured_name = _get_champion_display_name(
             featured_champion_id,
-            _featured_name_from_summary(summary, featured_champion_id),
+            featured_name_override or _featured_name_from_summary(summary, featured_champion_id),
             allow_network=allow_network,
         )
         preferred_skin = _get_player_loading_skin(summary, featured_name)
@@ -2745,6 +2815,9 @@ def _soloq_accent(summary: PlayerSummary) -> str:
 
 
 def _featured_champion_id(summary: PlayerSummary) -> int:
+        featured_champion_id, _ = _get_player_featured_champion_override(summary)
+        if featured_champion_id > 0:
+            return featured_champion_id
         return summary.top_mastery_champion_id if summary.top_mastery_champion_id > 0 else 0
 
 
@@ -2758,6 +2831,12 @@ class PlayerShowcaseCard(QFrame):
         self._featured_champion_id = showcase_data.featured_champion_id
         self._featured_name = showcase_data.featured_name
         self._preferred_skin = showcase_data.preferred_skin
+        self._featured_mastery_level, self._featured_mastery_points = _get_player_featured_mastery_override(summary)
+        if self._featured_champion_id == summary.top_mastery_champion_id:
+            if self._featured_mastery_level is None:
+                self._featured_mastery_level = summary.top_mastery_level
+            if self._featured_mastery_points is None:
+                self._featured_mastery_points = summary.top_mastery_points
         self._art_url = showcase_data.art_url
         if self._art_url and self._art_url not in _REMOTE_IMAGE_BYTES_CACHE:
             _prefetch_remote_image(self._art_url)
@@ -2874,13 +2953,13 @@ class PlayerShowcaseCard(QFrame):
 
     def _badge_specs(self) -> list[tuple[str, str]]:
         badges: list[tuple[str, str]] = []
-        if self.summary.top_mastery_level is not None:
-            badges.append((f"M{self.summary.top_mastery_level}", "#7cc7ff"))
-        if self.summary.top_mastery_points is not None:
-            badges.append((self._format_points(self.summary.top_mastery_points), "#9ed07b"))
+        if self._featured_mastery_level is not None:
+            badges.append((f"M{self._featured_mastery_level}", "#7cc7ff"))
+        if self._featured_mastery_points is not None:
+            badges.append((self._format_points(self._featured_mastery_points), "#9ed07b"))
         else:
             games = self._featured_games()
-            if self.summary.top_mastery_champion_id > 0 and games is not None and games > 0:
+            if self._featured_champion_id > 0 and games is not None and games > 0:
                 badges.append((f"{games} partidas", "#9ed07b"))
         return badges[:2]
 
@@ -5236,7 +5315,7 @@ class MainWindow(QMainWindow):
             best_rank = f"{leader.soloq.tier.title()} {leader.soloq.rank}".strip()
             leader_lp = f"{leader.soloq.league_points} LP"
         elif leader is not None:
-            best_rank = "Sin rango" if leader.ranked_available else "Sin SoloQ"
+            best_rank = "Sin rango" if leader.ranked_available else "Sin datos"
             leader_lp = "N/D"
 
         if leader is not None and leader.estimated_mmr is not None:
@@ -5647,18 +5726,9 @@ class MainWindow(QMainWindow):
         credentials_layout.setHorizontalSpacing(12)
         credentials_layout.setVerticalSpacing(12)
 
-        self.settings_api_key_input = QLineEdit()
-        self.settings_api_key_input.setPlaceholderText("Necesaria para espectear")
         self.settings_default_platform_combo = QComboBox()
         self.settings_default_platform_combo.addItems(PLATFORMS)
-        self.settings_lol_game_path_input = QLineEdit()
-        self.settings_lol_game_path_input.setPlaceholderText(
-            r"C:\Riot Games\League of Legends\Game\League of Legends.exe"
-        )
-
-        credentials_layout.addRow("API Key Riot", self.settings_api_key_input)
         credentials_layout.addRow("Plataforma por defecto", self.settings_default_platform_combo)
-        credentials_layout.addRow("Ruta de League", self.settings_lol_game_path_input)
 
         players_card = QFrame()
         players_card.setObjectName("Card")
@@ -5738,9 +5808,7 @@ class MainWindow(QMainWindow):
         self.settings_password_input.clear()
 
     def _populate_settings_editor(self) -> None:
-        self.settings_api_key_input.setText(self.config.api_key)
         self.settings_default_platform_combo.setCurrentText(self.config.default_platform)
-        self.settings_lol_game_path_input.setText(self.config.lol_game_path)
         self._clear_layout(self.settings_players_layout)
         for game_name, tag_line in self._configured_players():
             self._add_settings_player_row(game_name, tag_line)
@@ -5785,9 +5853,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Configuración invalida", "Debes guardar al menos un jugador.")
             return
 
-        self.config.api_key = self.settings_api_key_input.text().strip()
         self.config.default_platform = self.settings_default_platform_combo.currentText()
-        self.config.lol_game_path = self.settings_lol_game_path_input.text().strip()
         self.config.ranking_players = players
         save_config(self.config)
         self._refresh_players_overview()
@@ -5801,7 +5867,7 @@ class MainWindow(QMainWindow):
 
     def _handle_tab_changed(self, index: int) -> None:
         if index == TODAY_TAB_INDEX and not self.today_summaries and "today" not in self.worker_threads:
-            self._start_today(show_dialog=False, force_refresh=False)
+            self._start_today(show_dialog=False, force_refresh=True)
         if index == TODAY_TAB_INDEX and self.today_summaries:
             QTimer.singleShot(0, self._render_today)
         if index == PLAYERS_TAB_INDEX and self.ranking_summaries:
@@ -6286,7 +6352,6 @@ class MainWindow(QMainWindow):
         if "today" in self.worker_threads:
             return False
 
-        api_key = self.config.api_key.strip()
         platform = self.config.default_platform
         players = self._configured_players()
         self._refresh_today_overview()
@@ -6295,7 +6360,6 @@ class MainWindow(QMainWindow):
             self._refresh_group_room(full_render=True)
             return False
 
-        self.config.api_key = api_key
         self.config.default_platform = platform
         save_config(self.config)
 
@@ -6305,7 +6369,7 @@ class MainWindow(QMainWindow):
             self.today_stack.setCurrentIndex(0)
         self._start_worker(
             "today",
-            TodayLpWorker(api_key, platform, players, force_refresh=force_refresh),
+            TodayLpWorker(platform, players, force_refresh=force_refresh),
             self._on_today_success,
             lambda message: self._handle_today_failed(message, show_dialog),
             self.today_status_label,
@@ -6319,7 +6383,6 @@ class MainWindow(QMainWindow):
         if "ranking" in self.worker_threads:
             return False
 
-        api_key = self.config.api_key.strip()
         platform = self.config.default_platform
         players = self._configured_players()
         self._refresh_ranking_overview()
@@ -6329,7 +6392,6 @@ class MainWindow(QMainWindow):
             self._refresh_group_room(full_render=True)
             return False
 
-        self.config.api_key = api_key
         self.config.default_platform = platform
         save_config(self.config)
 
@@ -6340,7 +6402,7 @@ class MainWindow(QMainWindow):
         self.players_status_label.setText("Actualizando galería..." if force_refresh else "Preparando galería...")
         self._start_worker(
             "ranking",
-            RankingWorker(api_key, platform, players, force_refresh=force_refresh),
+            RankingWorker(platform, players, force_refresh=force_refresh),
             self._on_ranking_success,
             lambda message: self._handle_ranking_failed(message, show_dialog),
             self.ranking_status_label,
@@ -6354,7 +6416,6 @@ class MainWindow(QMainWindow):
         if "live_games" in self.worker_threads:
             return False
 
-        api_key = self.config.api_key.strip()
         platform = self.config.default_platform
         players = self._configured_players()
         if not players:
@@ -6362,7 +6423,6 @@ class MainWindow(QMainWindow):
             self._refresh_group_room(full_render=True)
             return False
 
-        self.config.api_key = api_key
         self.config.default_platform = platform
         save_config(self.config)
 
@@ -6372,7 +6432,7 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(LIVE_GAMES_TAB_INDEX)
         self._start_worker(
             "live_games",
-            LiveGameWorker(api_key, platform, players),
+            LiveGameWorker(platform, players),
             self._on_live_games_success,
             lambda message: self._handle_live_games_failed(message, show_dialog),
             self.live_games_status_label,
@@ -6462,8 +6522,18 @@ class MainWindow(QMainWindow):
     def _on_ranking_success(self, summaries: list[PlayerSummary]) -> None:
         self.ranking_button.setEnabled(True)
         self.players_refresh_button.setEnabled(True)
-        self.ranking_status_label.setText("Ranking actualizado.")
         self.ranking_summaries = sorted(summaries, key=self._ranking_score, reverse=True)
+        loaded_count = sum(1 for summary in self.ranking_summaries if self._summary_has_loaded_data(summary))
+        if self.ranking_summaries and loaded_count == 0:
+            self.ranking_status_label.setText(
+                f"No se pudo cargar informacion de ningun jugador. Revisa conexion/API. Diagnostico: {DIAGNOSTIC_PATH}"
+            )
+        elif loaded_count < len(self.ranking_summaries):
+            self.ranking_status_label.setText(
+                f"Ranking actualizado parcialmente. {loaded_count}/{len(self.ranking_summaries)} jugadores con datos."
+            )
+        else:
+            self.ranking_status_label.setText("Ranking actualizado.")
         self._refresh_ranking_overview()
         self._refresh_players_overview()
         self.players_data_version += 1
@@ -6471,7 +6541,11 @@ class MainWindow(QMainWindow):
         with _ASSET_CACHE_LOCK:
             _PLAYER_SHOWCASE_DATA_CACHE.clear()
         mastery_ready = sum(1 for summary in self.ranking_summaries if summary.top_mastery_champion_id > 0)
-        if mastery_ready == len(self.ranking_summaries) and self.ranking_summaries:
+        if self.ranking_summaries and loaded_count == 0:
+            self.players_status_label.setText(
+                f"No se pudo construir la galeria. Revisa conexion/API. Diagnostico: {DIAGNOSTIC_PATH}"
+            )
+        elif mastery_ready == len(self.ranking_summaries) and self.ranking_summaries:
             self.players_status_label.setText(f"Galería actualizada. {mastery_ready} loading screens listas.")
         elif mastery_ready > 0:
             self.players_status_label.setText(
@@ -6479,7 +6553,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self.players_status_label.setText(
-                "Galería actualizada, pero falta Riot API o datos de maestria para cargar las loading screens."
+                "Galería actualizada, pero faltan datos públicos de maestria para cargar las loading screens."
             )
         if self.today_summaries and "today" not in self.worker_threads:
             self.today_status_label.setText("Ranking actualizado. Pulsa para recalcular Hoy.")
@@ -6726,51 +6800,16 @@ class MainWindow(QMainWindow):
             self.live_games_layout.addWidget(LiveGameRow(summary))
         self.live_games_layout.addStretch(1)
 
-    def _resolve_lol_game_path(self) -> Path | None:
-        candidates: list[Path] = []
-        configured = self.config.lol_game_path.strip()
-        if configured:
-            candidates.append(Path(configured))
-        candidates.extend(
-            [
-                Path(r"C:\Riot Games\League of Legends\Game\League of Legends.exe"),
-                Path(r"C:\Program Files\Riot Games\League of Legends\Game\League of Legends.exe"),
-            ]
+    @staticmethod
+    def _summary_has_loaded_data(summary: PlayerSummary) -> bool:
+        return (
+            summary.summoner_level > 0
+            or summary.profile_icon_id > 0
+            or summary.soloq is not None
+            or summary.flex is not None
+            or bool(summary.most_played_champions)
+            or summary.top_mastery_champion_id > 0
         )
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_file():
-                return candidate
-        return None
-
-    def _build_spectate_bat(self, game_exe: Path, spectator: SpectatorSession) -> Path:
-        temp_dir = Path(tempfile.gettempdir())
-        bat_path = temp_dir / f"lolscout_spectate_{spectator.game_id}.bat"
-        command = (
-            f'"{game_exe}" "8394" "LoLLauncher.exe" "" '
-            f'"spectator {spectator.observer_host} {spectator.encryption_key} {spectator.game_id} {spectator.platform_id}"'
-        )
-        bat_path.write_text(f"@echo off\r\nstart \"\" {command}\r\n", encoding="utf-8")
-        return bat_path
-
-    def _spectate_live_game(self, summary: LiveGameParticipantSummary) -> None:
-        if summary.spectator is None:
-            QMessageBox.warning(self, "Espectear no disponible", "No hay datos de espectador para esta partida.")
-            return
-
-        game_exe = self._resolve_lol_game_path()
-        if game_exe is None:
-            QMessageBox.warning(
-                self,
-                "Ruta no configurada",
-                "Configura la ruta de League of Legends en Configuración para poder espectear.",
-            )
-            return
-
-        try:
-            bat_path = self._build_spectate_bat(game_exe, summary.spectator)
-            os.startfile(str(bat_path))
-        except OSError as exc:
-            QMessageBox.critical(self, "Error al espectear", f"No se pudo lanzar el espectador: {exc}")
 
     @staticmethod
     def _ranking_score(summary: PlayerSummary) -> int:

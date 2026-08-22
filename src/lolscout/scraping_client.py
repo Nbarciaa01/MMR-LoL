@@ -7,13 +7,17 @@ import html
 import json
 from pathlib import Path
 import re
+from threading import Lock
 import time
 from typing import Callable
 import unicodedata
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urlsplit, urlunsplit
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+from .config import APP_DIR
 from .models import (
     ChampionPlayStat,
     LiveGameParticipantSummary,
@@ -23,12 +27,11 @@ from .models import (
     PlayerSummary,
     RankedEntry,
     RolePlayStat,
-    SpectatorSession,
     TodayLpSummary,
 )
 
 
-class RiotApiError(Exception):
+class ScrapingError(Exception):
     pass
 
 
@@ -36,7 +39,29 @@ MATCH_PAGE_SIZE = 10
 MAX_RECENT_MATCHES = 10
 RANKING_CACHE_TTL_SECONDS = 300
 OPGG_AUTO_RENEW_AGE_SECONDS = 7 * 60
-CACHE_DIR = Path.cwd() / ".lolscout_cache"
+CACHE_DIR = APP_DIR / "cache"
+LEGACY_CACHE_DIR = Path.cwd() / ".lolscout_cache"
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/135.0.0.0 Safari/537.36"
+)
+DEFAULT_BROWSER_HEADERS = {
+    "User-Agent": BROWSER_USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
+LEAGUEOFGRAPHS_MIN_INTERVAL_SECONDS = 0.65
+LEAGUEOFGRAPHS_BLOCKED_BACKOFF_SECONDS = 90
+_LEAGUEOFGRAPHS_LOCK = Lock()
+_LEAGUEOFGRAPHS_LAST_REQUEST_AT = 0.0
+_LEAGUEOFGRAPHS_BLOCKED_UNTIL = 0.0
+CDRAGON_CHAMPION_SUMMARY_URL = (
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-summary.json"
+)
+_CHAMPION_ID_LOOKUP_CACHE: dict[str, int] | None = None
 
 PLATFORM_TO_OPGG_REGION = {
     "BR1": "br",
@@ -90,20 +115,6 @@ PLATFORM_TO_LEAGUEOFGRAPHS_REGION = {
     "RU": "ru",
     "TR1": "tr",
 }
-PLATFORM_TO_RIOT_REGION = {
-    "BR1": "americas",
-    "EUN1": "europe",
-    "EUW1": "europe",
-    "KR": "asia",
-    "LA1": "americas",
-    "LA2": "americas",
-    "ME1": "europe",
-    "NA1": "americas",
-    "OC1": "sea",
-    "RU": "europe",
-    "TR1": "europe",
-}
-
 TIER_ALIASES = {
     "iron": "IRON",
     "bronze": "BRONZE",
@@ -197,7 +208,7 @@ LP_TRACKING_TIER_SCORE = {
 LP_TRACKING_DIVISION_SCORE = {"IV": 0, "III": 100, "II": 200, "I": 300}
 TODAY_LP_SNAPSHOT_LIMIT = 96
 TODAY_LP_SNAPSHOT_DEDUP_SECONDS = 10 * 60
-RIOT_MATCH_CACHE_TTL_SECONDS = 14 * 24 * 60 * 60
+TODAY_BASELINE_GRACE_HOURS = 4
 
 
 @dataclass
@@ -226,34 +237,89 @@ class _TodayLpBaselineCandidate:
 
 
 @dataclass
-class _RiotIdentity:
-    puuid: str
-    summoner_id: str
-    game_name: str
-    tag_line: str
-
-
-@dataclass
-class RiotApiClient:
-    api_key: str
+class ScrapingClient:
     timeout: int = 20
     progress_callback: Callable[[str], None] | None = None
     session: requests.Session = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.session = requests.Session()
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        self._riot_identity_cache: dict[tuple[str, str, str], _RiotIdentity] = {}
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            status=2,
+            backoff_factor=0.35,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "POST"}),
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            try:
+                LEGACY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
 
     def _emit_progress(self, message: str) -> None:
         if self.progress_callback is not None:
             self.progress_callback(message)
 
     @staticmethod
+    def _summary_has_loaded_data(summary: PlayerSummary) -> bool:
+        return (
+            summary.summoner_level > 0
+            or summary.profile_icon_id > 0
+            or summary.soloq is not None
+            or summary.flex is not None
+            or bool(summary.most_played_champions)
+            or summary.top_mastery_champion_id > 0
+        )
+
+    @staticmethod
+    def _summary_has_valid_identity(summary: PlayerSummary) -> bool:
+        game_name = str(summary.game_name or "").strip()
+        tag_line = str(summary.tag_line or "").strip()
+        if not game_name or not tag_line:
+            return False
+        if any(token in game_name for token in ('"', "<", ">", "=")):
+            return False
+        return bool(re.fullmatch(r"[A-Za-z0-9]{2,8}", tag_line))
+
+    @staticmethod
+    def _cache_file_candidates(file_name: str) -> list[Path]:
+        primary_path = CACHE_DIR / file_name
+        legacy_path = LEGACY_CACHE_DIR / file_name
+        if legacy_path == primary_path:
+            return [primary_path]
+        return [primary_path, legacy_path]
+
+    @staticmethod
+    def _write_cache_path(file_name: str) -> Path:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            return CACHE_DIR / file_name
+        except OSError:
+            try:
+                LEGACY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                return LEGACY_CACHE_DIR / file_name
+            except OSError:
+                return CACHE_DIR / file_name
+
+    @staticmethod
     def _ranking_cache_path(platform: str, game_name: str, tag_line: str) -> Path:
         raw_key = f"{platform}:{game_name}#{tag_line}".casefold()
         safe_key = re.sub(r"[^a-z0-9_-]+", "_", raw_key)
-        return CACHE_DIR / f"ranking_{safe_key}.json"
+        return ScrapingClient._write_cache_path(f"ranking_{safe_key}.json")
+
+    @staticmethod
+    def _ranking_cache_paths(platform: str, game_name: str, tag_line: str) -> list[Path]:
+        raw_key = f"{platform}:{game_name}#{tag_line}".casefold()
+        safe_key = re.sub(r"[^a-z0-9_-]+", "_", raw_key)
+        return ScrapingClient._cache_file_candidates(f"ranking_{safe_key}.json")
 
     @staticmethod
     def _ranked_entry_to_dict(entry: RankedEntry | None) -> dict | None:
@@ -389,7 +455,7 @@ class RiotApiClient:
                 f"https://www.leagueofgraphs.com/summoner/{region}/{self._slug(game_name, tag_line)}",
                 context="LeagueOfGraphs perfil",
             )
-        except RiotApiError:
+        except ScrapingError:
             return 0, None, None
         return self._parse_top_champion_mastery_from_page(source)
 
@@ -400,8 +466,8 @@ class RiotApiClient:
         tag_line: str,
         max_age_seconds: int | None = RANKING_CACHE_TTL_SECONDS,
     ) -> PlayerSummary | None:
-        cache_path = self._ranking_cache_path(platform, game_name, tag_line)
-        if not cache_path.exists():
+        cache_path = next((path for path in self._ranking_cache_paths(platform, game_name, tag_line) if path.exists()), None)
+        if cache_path is None:
             return None
 
         try:
@@ -417,7 +483,12 @@ class RiotApiClient:
         data = payload.get("summary")
         if not isinstance(data, dict):
             return None
-        return self._deserialize_ranking_summary(data)
+        summary = self._deserialize_ranking_summary(data)
+        if not self._summary_has_loaded_data(summary):
+            return None
+        if not self._summary_has_valid_identity(summary):
+            return None
+        return summary
 
     def _store_cached_ranking_summary(
         self,
@@ -443,12 +514,13 @@ class RiotApiClient:
     def _daily_lp_cache_path(platform: str, game_name: str, tag_line: str) -> Path:
         raw_key = f"{platform}:{game_name}#{tag_line}".casefold()
         safe_key = re.sub(r"[^a-z0-9_-]+", "_", raw_key)
-        return CACHE_DIR / f"today_lp_{safe_key}.json"
+        return ScrapingClient._write_cache_path(f"today_lp_{safe_key}.json")
 
     @staticmethod
-    def _riot_match_cache_path(match_id: str) -> Path:
-        safe_key = re.sub(r"[^a-z0-9_-]+", "_", str(match_id or "").casefold())
-        return CACHE_DIR / f"riot_match_{safe_key}.json"
+    def _daily_lp_cache_paths(platform: str, game_name: str, tag_line: str) -> list[Path]:
+        raw_key = f"{platform}:{game_name}#{tag_line}".casefold()
+        safe_key = re.sub(r"[^a-z0-9_-]+", "_", raw_key)
+        return ScrapingClient._cache_file_candidates(f"today_lp_{safe_key}.json")
 
     @staticmethod
     def _normalize_rank_division(rank: str) -> str:
@@ -556,8 +628,8 @@ class RiotApiClient:
         game_name: str,
         tag_line: str,
     ) -> list[_TodayLpBaselineCandidate]:
-        cache_path = self._daily_lp_cache_path(platform, game_name, tag_line)
-        if not cache_path.exists():
+        cache_path = next((path for path in self._daily_lp_cache_paths(platform, game_name, tag_line) if path.exists()), None)
+        if cache_path is None:
             return []
 
         try:
@@ -617,10 +689,22 @@ class RiotApiClient:
             cache_game_name or summary.game_name,
             cache_tag_line or summary.tag_line,
         )
+        read_cache_path = next(
+            (
+                path
+                for path in self._daily_lp_cache_paths(
+                    summary.platform,
+                    cache_game_name or summary.game_name,
+                    cache_tag_line or summary.tag_line,
+                )
+                if path.exists()
+            ),
+            cache_path,
+        )
         snapshots: list[dict] = []
-        if cache_path.exists():
+        if read_cache_path.exists():
             try:
-                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                payload = json.loads(read_cache_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 payload = {}
             raw_snapshots = payload.get("snapshots")
@@ -700,6 +784,7 @@ class RiotApiClient:
         first_match_at: datetime | None = None,
         current_total_games: int | None = None,
         today_match_count: int = 0,
+        current_lp_score: int | None = None,
     ) -> _TodayLpBaselineCandidate | None:
         valid_candidates = [
             candidate
@@ -712,33 +797,74 @@ class RiotApiClient:
         def _source_priority(candidate: _TodayLpBaselineCandidate) -> int:
             return 0 if candidate.source == "Cache local" else 1
 
+        def _closest_to_day_start(candidate: _TodayLpBaselineCandidate) -> tuple[float, int, int]:
+            return (
+                abs((candidate.observed_at - start_of_day).total_seconds()),
+                0 if candidate.observed_at >= start_of_day else 1,
+                _source_priority(candidate),
+            )
+
+        def _most_recent(candidate: _TodayLpBaselineCandidate) -> tuple[datetime, int]:
+            return (candidate.observed_at, -_source_priority(candidate))
+
         search_candidates = valid_candidates
         if first_match_at is not None:
             pre_match_candidates = [candidate for candidate in valid_candidates if candidate.observed_at <= first_match_at]
             if pre_match_candidates:
                 search_candidates = pre_match_candidates
 
+        if today_match_count <= 0:
+            same_state_candidates = []
+            if current_total_games is not None and current_lp_score is not None:
+                same_state_candidates = [
+                    candidate
+                    for candidate in search_candidates
+                    if candidate.total_games is not None
+                    and candidate.total_games == current_total_games
+                    and candidate.score == current_lp_score
+                ]
+            if current_lp_score is not None and not same_state_candidates:
+                same_state_candidates = [
+                    candidate
+                    for candidate in search_candidates
+                    if candidate.observed_at >= start_of_day and candidate.score == current_lp_score
+                ]
+            if same_state_candidates:
+                return max(same_state_candidates, key=_most_recent)
+            return None
+
         expected_baseline_total = None
         if current_total_games is not None and today_match_count > 0:
             expected_baseline_total = max(0, current_total_games - today_match_count)
 
-        matching_game_count = []
         if expected_baseline_total is not None:
             matching_game_count = [
                 candidate
                 for candidate in search_candidates
                 if candidate.total_games is not None and candidate.total_games == expected_baseline_total
             ]
+            if matching_game_count:
+                return max(matching_game_count, key=_most_recent)
 
-        prioritized_candidates = matching_game_count or search_candidates
-        prioritized_candidates.sort(
-            key=lambda candidate: (
-                abs((candidate.observed_at - start_of_day).total_seconds()),
-                0 if candidate.observed_at >= start_of_day else 1,
-                _source_priority(candidate),
-            )
+        same_day_candidates = [candidate for candidate in search_candidates if candidate.observed_at >= start_of_day]
+        if same_day_candidates:
+            return max(same_day_candidates, key=_most_recent)
+
+        grace = timedelta(hours=TODAY_BASELINE_GRACE_HOURS)
+        midnight_window_end = min(
+            first_match_at if first_match_at is not None else now_local,
+            start_of_day + grace,
         )
-        return prioritized_candidates[0]
+        near_midnight_candidates = [
+            candidate
+            for candidate in search_candidates
+            if start_of_day - grace <= candidate.observed_at <= midnight_window_end
+        ]
+        if not near_midnight_candidates:
+            return None
+
+        near_midnight_candidates.sort(key=_closest_to_day_start)
+        return near_midnight_candidates[0]
 
     @staticmethod
     def _with_cache_bust(url: str) -> str:
@@ -747,6 +873,97 @@ class RiotApiClient:
         query.append(("_lolscout_refresh", str(int(time.time() * 1000))))
         return urlunsplit(parts._replace(query=urlencode(query)))
 
+    @staticmethod
+    def _is_leagueofgraphs_url(url: str) -> bool:
+        return "leagueofgraphs.com" in urlsplit(url).netloc.casefold()
+
+    @staticmethod
+    def _browser_headers_for_url(url: str, force_refresh: bool = False) -> dict[str, str]:
+        headers = dict(DEFAULT_BROWSER_HEADERS)
+        host = urlsplit(url).netloc.casefold()
+        if "leagueofgraphs.com" in host:
+            headers.update(
+                {
+                    "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Referer": "https://www.leagueofgraphs.com/",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                }
+            )
+        elif "op.gg" in host:
+            headers.update(
+                {
+                    "Accept-Language": "en-US,en;q=0.9,es-ES;q=0.8,es;q=0.7",
+                    "Referer": "https://op.gg/",
+                }
+            )
+        elif "u.gg" in host:
+            headers.update(
+                {
+                    "Accept-Language": "en-US,en;q=0.9,es-ES;q=0.8,es;q=0.7",
+                    "Referer": "https://u.gg/",
+                }
+            )
+        if force_refresh:
+            headers.update(
+                {
+                    "Cache-Control": "no-cache, no-store, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                }
+            )
+        return headers
+
+    @staticmethod
+    def _rate_limit_url(url: str) -> None:
+        global _LEAGUEOFGRAPHS_LAST_REQUEST_AT
+        if not ScrapingClient._is_leagueofgraphs_url(url):
+            return
+
+        with _LEAGUEOFGRAPHS_LOCK:
+            now = time.monotonic()
+            wait_seconds = _LEAGUEOFGRAPHS_LAST_REQUEST_AT + LEAGUEOFGRAPHS_MIN_INTERVAL_SECONDS - now
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            _LEAGUEOFGRAPHS_LAST_REQUEST_AT = time.monotonic()
+
+    @staticmethod
+    def _leagueofgraphs_blocked_seconds() -> float:
+        if time.monotonic() >= _LEAGUEOFGRAPHS_BLOCKED_UNTIL:
+            return 0.0
+        return max(0.0, _LEAGUEOFGRAPHS_BLOCKED_UNTIL - time.monotonic())
+
+    @staticmethod
+    def _mark_leagueofgraphs_blocked() -> None:
+        global _LEAGUEOFGRAPHS_BLOCKED_UNTIL
+        with _LEAGUEOFGRAPHS_LOCK:
+            _LEAGUEOFGRAPHS_BLOCKED_UNTIL = max(
+                _LEAGUEOFGRAPHS_BLOCKED_UNTIL,
+                time.monotonic() + LEAGUEOFGRAPHS_BLOCKED_BACKOFF_SECONDS,
+            )
+
+    @staticmethod
+    def _clear_leagueofgraphs_blocked() -> None:
+        global _LEAGUEOFGRAPHS_BLOCKED_UNTIL
+        if _LEAGUEOFGRAPHS_BLOCKED_UNTIL <= 0:
+            return
+        with _LEAGUEOFGRAPHS_LOCK:
+            _LEAGUEOFGRAPHS_BLOCKED_UNTIL = 0.0
+
+    def _prime_leagueofgraphs_session(self) -> None:
+        url = "https://www.leagueofgraphs.com/"
+        try:
+            self._rate_limit_url(url)
+            self.session.get(
+                url,
+                headers=self._browser_headers_for_url(url),
+                timeout=min(6, self.timeout),
+            )
+        except requests.RequestException:
+            return
+
     def _get_text(
         self,
         url: str,
@@ -754,186 +971,42 @@ class RiotApiClient:
         headers: dict[str, str] | None = None,
         force_refresh: bool = False,
     ) -> str:
-        request_headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
+        request_headers = self._browser_headers_for_url(url, force_refresh=force_refresh)
         request_url = self._with_cache_bust(url) if force_refresh else url
-        if force_refresh:
-            request_headers.update(
-                {
-                    "Cache-Control": "no-cache, no-store, max-age=0",
-                    "Pragma": "no-cache",
-                    "Expires": "0",
-                }
-            )
         if headers:
             request_headers.update(headers)
 
-        try:
-            response = self.session.get(request_url, headers=request_headers, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise RiotApiError(f"{context}: no se pudo conectar: {exc}") from exc
+        is_leagueofgraphs = self._is_leagueofgraphs_url(url)
+        if is_leagueofgraphs and self._leagueofgraphs_blocked_seconds() > 0:
+            raise ScrapingError(f"{context}: LeagueOfGraphs bloqueado temporalmente; usando fuentes alternativas.")
+        max_attempts = 2 if is_leagueofgraphs else 1
+        response: requests.Response | None = None
+        for attempt in range(max_attempts):
+            try:
+                self._rate_limit_url(url)
+                response = self.session.get(request_url, headers=request_headers, timeout=self.timeout)
+            except requests.RequestException as exc:
+                raise ScrapingError(f"{context}: no se pudo conectar: {exc}") from exc
+
+            if is_leagueofgraphs and response.status_code in {403, 429} and attempt + 1 < max_attempts:
+                self._prime_leagueofgraphs_session()
+                time.sleep(0.8)
+                continue
+            break
+
+        if response is None:
+            raise ScrapingError(f"{context}: no se pudo conectar.")
 
         if response.status_code == 404:
-            raise RiotApiError(f"{context}: jugador no encontrado.")
+            raise ScrapingError(f"{context}: jugador no encontrado.")
+        if is_leagueofgraphs and response.status_code < 400:
+            self._clear_leagueofgraphs_blocked()
+        if is_leagueofgraphs and response.status_code in {403, 429}:
+            self._mark_leagueofgraphs_blocked()
         if response.status_code >= 400:
-            raise RiotApiError(f"{context}: error HTTP ({response.status_code}).")
+            raise ScrapingError(f"{context}: error HTTP ({response.status_code}).")
 
         return response.text
-
-    def _riot_headers(self) -> dict[str, str]:
-        token = self.api_key.strip()
-        if not token:
-            raise RiotApiError("Riot API: falta API Key.")
-        return {"X-Riot-Token": token, "User-Agent": "Mozilla/5.0"}
-
-    def _get_json(self, url: str, context: str) -> dict | list:
-        try:
-            response = self.session.get(url, headers=self._riot_headers(), timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise RiotApiError(f"{context}: no se pudo conectar con Riot: {exc}") from exc
-
-        if response.status_code == 404:
-            raise RiotApiError(f"{context}: no encontrado.")
-        if response.status_code == 401:
-            raise RiotApiError(f"{context}: API Key invalida o caducada.")
-        if response.status_code == 403:
-            raise RiotApiError(f"{context}: acceso denegado.")
-        if response.status_code == 429:
-            raise RiotApiError(f"{context}: limite de peticiones alcanzado.")
-        if response.status_code >= 400:
-            raise RiotApiError(f"{context}: error Riot API ({response.status_code}).")
-
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise RiotApiError(f"{context}: respuesta JSON invalida.") from exc
-
-    def _get_json_or_none_on_404(self, url: str, context: str) -> dict | list | None:
-        try:
-            return self._get_json(url, context)
-        except RiotApiError as exc:
-            if "no encontrado" in str(exc).lower():
-                return None
-            raise
-
-    def _resolve_riot_identity(self, platform: str, game_name: str, tag_line: str) -> _RiotIdentity | None:
-        regional_route = PLATFORM_TO_RIOT_REGION.get(platform)
-        if not regional_route or not self.api_key.strip():
-            return None
-
-        cache_key = (platform.casefold(), game_name.casefold(), tag_line.casefold())
-        cached = self._riot_identity_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        account = self._get_json_or_none_on_404(
-            f"https://{regional_route}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/"
-            f"{quote(game_name)}/{quote(tag_line)}",
-            context="Riot Account",
-        )
-        if not isinstance(account, dict):
-            return None
-
-        puuid = str(account.get("puuid", "")).strip()
-        if not puuid:
-            return None
-
-        summoner = self._get_json_or_none_on_404(
-            f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{quote(puuid)}",
-            context="Riot Summoner",
-        )
-        if not isinstance(summoner, dict):
-            return None
-
-        summoner_id = str(summoner.get("id", "")).strip()
-        if not summoner_id:
-            return None
-
-        identity = _RiotIdentity(
-            puuid=puuid,
-            summoner_id=summoner_id,
-            game_name=str(account.get("gameName", game_name) or game_name).strip() or game_name,
-            tag_line=str(account.get("tagLine", tag_line) or tag_line).strip() or tag_line,
-        )
-        self._riot_identity_cache[cache_key] = identity
-        self._riot_identity_cache[(platform.casefold(), identity.game_name.casefold(), identity.tag_line.casefold())] = identity
-        return identity
-
-    def _load_cached_riot_match_detail(self, match_id: str) -> dict | None:
-        cache_path = self._riot_match_cache_path(match_id)
-        if not cache_path.exists():
-            return None
-        try:
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-
-        cached_at = float(payload.get("cached_at", 0) or 0)
-        if cached_at > 0 and time.time() - cached_at > RIOT_MATCH_CACHE_TTL_SECONDS:
-            return None
-
-        detail = payload.get("detail")
-        if isinstance(detail, dict):
-            return detail
-        return None
-
-    def _store_cached_riot_match_detail(self, match_id: str, detail: dict) -> None:
-        cache_path = self._riot_match_cache_path(match_id)
-        payload = {"cached_at": time.time(), "detail": detail}
-        try:
-            cache_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
-        except OSError:
-            return
-
-    def _get_riot_match_detail(self, regional_route: str, match_id: str) -> dict | None:
-        cached = self._load_cached_riot_match_detail(match_id)
-        if cached is not None:
-            return cached
-
-        detail = self._get_json(
-            f"https://{regional_route}.api.riotgames.com/lol/match/v5/matches/{quote(match_id)}",
-            context="Riot Match",
-        )
-        if not isinstance(detail, dict):
-            return None
-        self._store_cached_riot_match_detail(match_id, detail)
-        return detail
-
-    def _load_ranked_from_riot(self, platform: str, game_name: str, tag_line: str) -> list[dict]:
-        identity = self._resolve_riot_identity(platform, game_name, tag_line)
-        if identity is None:
-            return []
-
-        entries = self._get_json_or_none_on_404(
-            f"https://{platform.lower()}.api.riotgames.com/lol/league/v4/entries/by-summoner/{quote(identity.summoner_id)}",
-            context="Riot Ranked",
-        )
-        if not isinstance(entries, list):
-            return []
-
-        normalized_entries: list[dict] = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            queue_type = str(entry.get("queueType", "")).strip()
-            if queue_type not in {"RANKED_SOLO_5x5", "RANKED_FLEX_SR"}:
-                continue
-            tier_raw = str(entry.get("tier", "")).strip()
-            if not tier_raw or tier_raw.casefold() == "unranked":
-                continue
-            normalized_entries.append(
-                {
-                    "queueType": queue_type,
-                    "tier": TIER_ALIASES.get(tier_raw.casefold(), tier_raw.upper()),
-                    "rank": self._normalize_rank_division(str(entry.get("rank", "")).strip()),
-                    "leaguePoints": int(entry.get("leaguePoints", 0) or 0),
-                    "wins": int(entry.get("wins", 0) or 0),
-                    "losses": int(entry.get("losses", 0) or 0),
-                }
-            )
-        return normalized_entries
 
     @staticmethod
     def _format_relative_played_at(played_at: datetime, now_local: datetime | None = None) -> str:
@@ -959,189 +1032,6 @@ class RiotApiClient:
         days = hours // 24
         return f"{days} days ago"
 
-    def _build_today_match_from_riot_detail(
-        self,
-        detail: dict,
-        puuid: str,
-        now_local: datetime | None = None,
-    ) -> MatchSummary | None:
-        metadata = detail.get("metadata")
-        info = detail.get("info")
-        if not isinstance(metadata, dict) or not isinstance(info, dict):
-            return None
-
-        match_id = str(metadata.get("matchId", "")).strip()
-        participants = info.get("participants")
-        if not match_id or not isinstance(participants, list):
-            return None
-
-        participant = next(
-            (
-                item
-                for item in participants
-                if isinstance(item, dict) and str(item.get("puuid", "")).strip() == puuid
-            ),
-            None,
-        )
-        if participant is None:
-            return None
-
-        try:
-            queue_id = int(info.get("queueId", 0) or 0)
-        except (TypeError, ValueError):
-            queue_id = 0
-        if queue_id != 420:
-            return None
-
-        try:
-            champion_id = int(participant.get("championId", 0) or 0)
-        except (TypeError, ValueError):
-            champion_id = 0
-        try:
-            kills = int(participant.get("kills", 0) or 0)
-            deaths = int(participant.get("deaths", 0) or 0)
-            assists = int(participant.get("assists", 0) or 0)
-        except (TypeError, ValueError):
-            return None
-
-        try:
-            duration_seconds = int(info.get("gameDuration", 0) or 0)
-        except (TypeError, ValueError):
-            duration_seconds = 0
-        duration_min = max(1, duration_seconds // 60) if duration_seconds > 0 else 0
-
-        try:
-            end_timestamp_ms = int(info.get("gameEndTimestamp", 0) or 0)
-        except (TypeError, ValueError):
-            end_timestamp_ms = 0
-        if end_timestamp_ms <= 0:
-            try:
-                start_timestamp_ms = int(info.get("gameStartTimestamp", 0) or info.get("gameCreation", 0) or 0)
-            except (TypeError, ValueError):
-                start_timestamp_ms = 0
-            if start_timestamp_ms > 0 and duration_seconds > 0:
-                end_timestamp_ms = start_timestamp_ms + (duration_seconds * 1000)
-
-        played_at = None
-        if end_timestamp_ms > 0:
-            played_at = datetime.fromtimestamp(end_timestamp_ms / 1000, tz=timezone.utc).astimezone()
-
-        cs = int(participant.get("totalMinionsKilled", 0) or 0) + int(participant.get("neutralMinionsKilled", 0) or 0)
-        role = self._normalize_role_text(
-            str(participant.get("individualPosition") or participant.get("teamPosition") or "")
-        )
-        champion_name = str(participant.get("championName", "")).strip() or f"Champion {champion_id}"
-
-        return MatchSummary(
-            match_id=match_id,
-            champion=champion_name,
-            champion_id=champion_id,
-            role=role,
-            queue_name="Ranked Solo/Duo",
-            won=bool(participant.get("win", False)),
-            kills=kills,
-            deaths=deaths,
-            assists=assists,
-            cs=cs,
-            duration_min=duration_min,
-            damage=int(participant.get("totalDamageDealtToChampions", 0) or 0),
-            gold=int(participant.get("goldEarned", 0) or 0),
-            kda=round((kills + assists) / max(1, deaths), 2),
-            played_at_iso=played_at.isoformat() if played_at is not None else None,
-            played_at_text=self._format_relative_played_at(played_at, now_local=now_local) if played_at is not None else "",
-        )
-
-    def _load_today_matches_from_riot(
-        self,
-        platform: str,
-        game_name: str,
-        tag_line: str,
-    ) -> list[MatchSummary]:
-        identity = self._resolve_riot_identity(platform, game_name, tag_line)
-        regional_route = PLATFORM_TO_RIOT_REGION.get(platform)
-        if identity is None or not regional_route:
-            return []
-
-        now_local = datetime.now().astimezone()
-        start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        match_ids = self._get_json_or_none_on_404(
-            f"https://{regional_route}.api.riotgames.com/lol/match/v5/matches/by-puuid/{quote(identity.puuid)}/ids"
-            f"?startTime={int(start_of_day.astimezone(timezone.utc).timestamp())}&queue=420&start=0&count=10",
-            context="Riot Matchlist",
-        )
-        if not isinstance(match_ids, list):
-            return []
-
-        today_matches: list[MatchSummary] = []
-        for raw_match_id in match_ids:
-            match_id = str(raw_match_id or "").strip()
-            if not match_id:
-                continue
-            detail = self._get_riot_match_detail(regional_route, match_id)
-            if detail is None:
-                continue
-            match = self._build_today_match_from_riot_detail(detail, identity.puuid, now_local=now_local)
-            if match is None or not match.played_at_iso:
-                continue
-            try:
-                played_at = datetime.fromisoformat(match.played_at_iso)
-            except ValueError:
-                continue
-            if played_at.tzinfo is None:
-                played_at = played_at.replace(tzinfo=timezone.utc)
-            if played_at.astimezone() < start_of_day:
-                continue
-            today_matches.append(match)
-
-        today_matches.sort(key=lambda match: match.played_at_iso or "", reverse=True)
-        return today_matches[:5]
-
-    @staticmethod
-    def _merge_today_match_sources(
-        primary_matches: list[MatchSummary],
-        secondary_matches: list[MatchSummary],
-    ) -> list[MatchSummary]:
-        if not primary_matches:
-            return secondary_matches[:5]
-        if not secondary_matches:
-            return primary_matches[:5]
-
-        secondary_by_id = {match.match_id: match for match in secondary_matches if match.match_id}
-        merged: list[MatchSummary] = []
-        seen_ids: set[str] = set()
-        for match in primary_matches:
-            fallback = secondary_by_id.get(match.match_id)
-            merged.append(
-                MatchSummary(
-                    match_id=match.match_id or (fallback.match_id if fallback else ""),
-                    champion=match.champion or (fallback.champion if fallback else ""),
-                    champion_id=match.champion_id or (fallback.champion_id if fallback else 0),
-                    role=match.role if match.role != "UNKNOWN" else (fallback.role if fallback else "UNKNOWN"),
-                    queue_name=match.queue_name or (fallback.queue_name if fallback else ""),
-                    won=match.won,
-                    kills=match.kills,
-                    deaths=match.deaths,
-                    assists=match.assists,
-                    cs=match.cs or (fallback.cs if fallback else 0),
-                    duration_min=match.duration_min or (fallback.duration_min if fallback else 0),
-                    damage=match.damage or (fallback.damage if fallback else 0),
-                    gold=match.gold or (fallback.gold if fallback else 0),
-                    kda=match.kda or (fallback.kda if fallback else 0.0),
-                    played_at_iso=match.played_at_iso or (fallback.played_at_iso if fallback else None),
-                    played_at_text=match.played_at_text or (fallback.played_at_text if fallback else ""),
-                )
-            )
-            if match.match_id:
-                seen_ids.add(match.match_id)
-
-        for match in secondary_matches:
-            if match.match_id and match.match_id in seen_ids:
-                continue
-            merged.append(match)
-
-        merged.sort(key=lambda match: match.played_at_iso or "", reverse=True)
-        return merged[:5]
-
     @staticmethod
     def _normalize_lookup_name(value: str) -> str:
         return re.sub(r"\s+", " ", value.strip()).casefold()
@@ -1156,6 +1046,57 @@ class RiotApiClient:
         normalized = "".join(char for char in normalized if not unicodedata.combining(char))
         normalized = re.sub(r"[^a-z0-9]+", "", normalized.casefold())
         return normalized
+
+    def _load_champion_id_lookup(self) -> dict[str, int]:
+        global _CHAMPION_ID_LOOKUP_CACHE
+        if _CHAMPION_ID_LOOKUP_CACHE is not None:
+            return _CHAMPION_ID_LOOKUP_CACHE
+
+        lookup: dict[str, int] = {}
+        try:
+            response = self.session.get(
+                CDRAGON_CHAMPION_SUMMARY_URL,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            payload = []
+
+        if isinstance(payload, list):
+            for entry in payload:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    champion_id = int(entry.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if champion_id <= 0:
+                    continue
+                for key in (entry.get("name"), entry.get("alias")):
+                    normalized = self._normalize_champion_lookup(str(key or ""))
+                    if normalized:
+                        lookup[normalized] = champion_id
+
+        _CHAMPION_ID_LOOKUP_CACHE = lookup
+        return lookup
+
+    def _champion_id_from_name(self, champion_name: str) -> int:
+        return self._load_champion_id_lookup().get(self._normalize_champion_lookup(champion_name), 0)
+
+    def _fill_champion_ids(self, champions: list[ChampionPlayStat]) -> list[ChampionPlayStat]:
+        filled: list[ChampionPlayStat] = []
+        for champion in champions:
+            champion_id = champion.champion_id or self._champion_id_from_name(champion.champion)
+            filled.append(
+                ChampionPlayStat(
+                    champion=champion.champion,
+                    champion_id=champion_id,
+                    games=champion.games,
+                )
+            )
+        return filled
 
     @staticmethod
     def _normalize_role_text(value: str) -> str:
@@ -1225,59 +1166,6 @@ class RiotApiClient:
                         return normalized
 
         return "UNKNOWN"
-
-    def _load_spectator_session(self, platform: str, game_name: str, tag_line: str) -> SpectatorSession | None:
-        regional_route = PLATFORM_TO_RIOT_REGION.get(platform)
-        if not regional_route or not self.api_key.strip():
-            return None
-
-        account = self._get_json_or_none_on_404(
-            f"https://{regional_route}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/"
-            f"{quote(game_name)}/{quote(tag_line)}",
-            context="Riot Account",
-        )
-        if not isinstance(account, dict):
-            return None
-
-        puuid = str(account.get("puuid", "")).strip()
-        if not puuid:
-            return None
-
-        summoner = self._get_json_or_none_on_404(
-            f"https://{platform.lower()}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{quote(puuid)}",
-            context="Riot Summoner",
-        )
-        if not isinstance(summoner, dict):
-            return None
-
-        summoner_id = str(summoner.get("id", "")).strip()
-        if not summoner_id:
-            return None
-
-        active_game = self._get_json_or_none_on_404(
-            f"https://{platform.lower()}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{quote(summoner_id)}",
-            context="Riot Spectator",
-        )
-        if not isinstance(active_game, dict):
-            return None
-
-        observers = active_game.get("observers")
-        if not isinstance(observers, dict):
-            return None
-
-        encryption_key = str(observers.get("encryptionKey", "")).strip()
-        if not encryption_key:
-            return None
-
-        try:
-            game_id = int(active_game.get("gameId", 0) or 0)
-        except (TypeError, ValueError):
-            return None
-        if game_id <= 0:
-            return None
-
-        platform_id = str(active_game.get("platformId", platform) or platform).strip() or platform
-        return SpectatorSession(platform_id=platform_id, game_id=game_id, encryption_key=encryption_key)
 
     @staticmethod
     def _slug(game_name: str, tag_line: str) -> str:
@@ -1388,28 +1276,28 @@ class RiotApiClient:
         params: dict[str, object],
         context: str,
     ) -> dict | None:
+        request_headers = self._browser_headers_for_url(url, force_refresh=True)
+        request_headers.update(
+            {
+                "Accept": "text/x-component",
+                "Content-Type": "text/plain;charset=UTF-8",
+                "next-action": action_id,
+                "Origin": "https://op.gg",
+                "Referer": url,
+            }
+        )
         try:
             response = self.session.post(
                 url,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "text/x-component",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Cache-Control": "no-cache, no-store, max-age=0",
-                    "Pragma": "no-cache",
-                    "Content-Type": "text/plain;charset=UTF-8",
-                    "next-action": action_id,
-                    "Origin": "https://op.gg",
-                    "Referer": url,
-                },
+                headers=request_headers,
                 data=json.dumps([params]),
                 timeout=self.timeout,
             )
         except requests.RequestException as exc:
-            raise RiotApiError(f"{context}: no se pudo conectar con OP.GG.") from exc
+            raise ScrapingError(f"{context}: no se pudo conectar con OP.GG.") from exc
 
         if response.status_code >= 400:
-            raise RiotApiError(f"{context}: error HTTP ({response.status_code}).")
+            raise ScrapingError(f"{context}: error HTTP ({response.status_code}).")
 
         return self._parse_opgg_action_payload(response.text)
 
@@ -1513,7 +1401,7 @@ class RiotApiClient:
         if force_refresh:
             try:
                 page = self._refresh_opgg_profile(url, opgg_region, page)
-            except RiotApiError:
+            except ScrapingError:
                 pass
         return page
 
@@ -1528,6 +1416,76 @@ class RiotApiClient:
         if flex:
             entries.append(flex)
         return entries
+
+    def _load_profile_from_opgg(
+        self,
+        platform: str,
+        game_name: str,
+        tag_line: str,
+        page: str | None = None,
+        force_refresh: bool = False,
+    ) -> ExternalProfile | None:
+        opgg_page = (
+            page
+            if page is not None
+            else self._load_opgg_profile_page(platform, game_name, tag_line, force_refresh=force_refresh)
+        )
+        if not opgg_page:
+            return None
+
+        text = html.unescape(re.sub(r"<[^>]+>", " ", opgg_page))
+        normalized_text = " ".join(text.split())
+        canonical_game_name = game_name
+        canonical_tag_line = tag_line
+
+        for pattern, source in (
+            (r"<title>\s*([^#<]+)#([A-Za-z0-9]{2,6})\s+-", opgg_page),
+            (r'"gameName"\s*:\s*"([^"]+)"\s*,\s*"tagline"\s*:\s*"([^"]+)"', opgg_page),
+            (r'"game_name"\s*:\s*"([^"]+)"\s*,\s*"tagline"\s*:\s*"([^"]+)"', opgg_page),
+            (r'"riotUserName"\s*:\s*"([^"]+)"\s*,\s*"riotTagLine"\s*:\s*"([^"]+)"', opgg_page),
+            (r"\b([^#<>]{2,32})#([A-Za-z0-9]{2,6})\b", normalized_text),
+        ):
+            match = re.search(pattern, source, re.IGNORECASE)
+            if match:
+                candidate_name = self._clean_html_text(match.group(1))
+                candidate_tag = self._clean_html_text(match.group(2))
+                if (
+                    candidate_name
+                    and candidate_tag
+                    and "theme-color" not in candidate_name.casefold()
+                    and "=" not in candidate_name
+                    and '"' not in candidate_name
+                ):
+                    canonical_game_name = candidate_name
+                    canonical_tag_line = candidate_tag
+                    break
+
+        summoner_level = 0
+        for pattern in (
+            r'"summonerLevel"\s*:\s*(\d+)',
+            r'"level"\s*:\s*(\d+)',
+            r"\bLevel\s+(\d+)\b",
+        ):
+            match = re.search(pattern, opgg_page, re.IGNORECASE)
+            if match:
+                summoner_level = int(match.group(1))
+                break
+
+        profile_icon_id = 0
+        icon_match = re.search(r"/profileicon/(\d+)\.png|profileIconId[\"']?\s*[:=]\s*(\d+)", opgg_page, re.IGNORECASE)
+        if icon_match:
+            profile_icon_id = int(icon_match.group(1) or icon_match.group(2) or 0)
+
+        if summoner_level <= 0 and profile_icon_id <= 0 and not self._parse_ranked_from_opgg_page(opgg_page):
+            return None
+
+        return ExternalProfile(
+            game_name=canonical_game_name,
+            tag_line=canonical_tag_line,
+            summoner_level=summoner_level,
+            profile_icon_id=profile_icon_id,
+            matches=[],
+        )
 
     def _load_ranked_from_opgg(
         self,
@@ -1554,7 +1512,7 @@ class RiotApiClient:
         for slug in self._ugg_slug_candidates(game_name, tag_line):
             try:
                 page = self._get_text(f"https://u.gg/lol/profile/{ugg_region}/{slug}/overview", context="U.GG perfil")
-            except RiotApiError:
+            except ScrapingError:
                 continue
 
             text = html.unescape(re.sub(r"<[^>]+>", " ", page))
@@ -1611,7 +1569,7 @@ class RiotApiClient:
         for slug in self._ugg_slug_candidates(game_name, tag_line):
             try:
                 page = self._get_text(f"https://u.gg/lol/profile/{ugg_region}/{slug}/overview", context="U.GG perfil")
-            except RiotApiError:
+            except ScrapingError:
                 continue
 
             text = html.unescape(re.sub(r"<[^>]+>", " ", page))
@@ -1639,7 +1597,7 @@ class RiotApiClient:
         for slug in self._ugg_slug_candidates(game_name, tag_line):
             try:
                 page = self._get_text(f"https://u.gg/lol/profile/{ugg_region}/{slug}/overview", context="U.GG perfil")
-            except RiotApiError:
+            except ScrapingError:
                 continue
 
             canonical_game_name = game_name
@@ -1712,7 +1670,7 @@ class RiotApiClient:
     ) -> ExternalProfile:
         region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
         if not region:
-            raise RiotApiError("LeagueOfGraphs: plataforma no soportada.")
+            raise ScrapingError("LeagueOfGraphs: plataforma no soportada.")
 
         url = f"https://www.leagueofgraphs.com/summoner/{region}/{self._slug(game_name, tag_line)}"
         source = page if page is not None else self._get_text(
@@ -1770,6 +1728,87 @@ class RiotApiClient:
             profile_icon_id=profile_icon_id,
             matches=matches,
         )
+
+    def _load_profile_with_fallbacks(
+        self,
+        platform: str,
+        game_name: str,
+        tag_line: str,
+        include_matches: bool = False,
+        force_refresh: bool = False,
+    ) -> tuple[ExternalProfile, str | None, str | None]:
+        league_page = None
+        opgg_page = None
+        last_error: ScrapingError | None = None
+        tried_opgg = False
+        tried_ugg = False
+
+        def try_opgg_profile() -> ExternalProfile | None:
+            nonlocal opgg_page, last_error, tried_opgg
+            tried_opgg = True
+            try:
+                opgg_page = self._load_opgg_profile_page(platform, game_name, tag_line, force_refresh=force_refresh)
+                return self._load_profile_from_opgg(
+                    platform,
+                    game_name,
+                    tag_line,
+                    page=opgg_page,
+                    force_refresh=force_refresh,
+                )
+            except ScrapingError as exc:
+                last_error = exc
+                return None
+
+        def try_ugg_profile() -> ExternalProfile | None:
+            nonlocal tried_ugg
+            tried_ugg = True
+            return self._load_profile_from_ugg(platform, game_name, tag_line)
+
+        if not include_matches:
+            opgg_profile = try_opgg_profile()
+            if opgg_profile is not None:
+                return opgg_profile, None, opgg_page
+
+            ugg_profile = try_ugg_profile()
+            if ugg_profile is not None:
+                return ugg_profile, None, opgg_page
+
+        region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
+        if region:
+            try:
+                league_page = self._get_text(
+                    f"https://www.leagueofgraphs.com/summoner/{region}/{self._slug(game_name, tag_line)}",
+                    context="LeagueOfGraphs perfil",
+                    force_refresh=force_refresh,
+                )
+                return (
+                    self._load_profile_from_leagueofgraphs(
+                        platform,
+                        game_name,
+                        tag_line,
+                        include_matches=include_matches,
+                        page=league_page,
+                        force_refresh=force_refresh,
+                    ),
+                    league_page,
+                    None,
+                )
+            except ScrapingError as exc:
+                last_error = exc
+
+        if not tried_opgg:
+            opgg_profile = try_opgg_profile()
+            if opgg_profile is not None:
+                return opgg_profile, None, opgg_page
+
+        if not tried_ugg:
+            ugg_profile = try_ugg_profile()
+            if ugg_profile is not None:
+                return ugg_profile, None, opgg_page
+
+        if last_error is not None:
+            raise last_error
+        raise ScrapingError("No se pudo cargar el perfil desde las fuentes publicas.")
 
     @staticmethod
     def _parse_leagueofgraphs_relative_time(text: str, now_local: datetime | None = None) -> datetime | None:
@@ -1895,7 +1934,7 @@ class RiotApiClient:
                 continue
             today_matches.append(match)
         today_matches.sort(key=lambda match: match.played_at_iso or "", reverse=True)
-        return today_matches[:5]
+        return today_matches
 
     def _load_leagueofgraphs_ranked(
         self,
@@ -2041,7 +2080,20 @@ class RiotApiClient:
         game_name: str,
         tag_line: str,
         force_refresh: bool = False,
+        opgg_page: str | None = None,
     ) -> list[ChampionPlayStat]:
+        try:
+            opgg_champions = self._load_ranked_preferences_from_opgg(
+                platform,
+                game_name,
+                tag_line,
+                page=opgg_page,
+            )[:5]
+        except ScrapingError:
+            opgg_champions = []
+        if opgg_champions:
+            return opgg_champions
+
         region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
         if not region:
             return []
@@ -2053,22 +2105,14 @@ class RiotApiClient:
                 context="LeagueOfGraphs campeones SoloQ",
                 force_refresh=force_refresh,
             )
-        except RiotApiError:
-            return []
-        return self._parse_leagueofgraphs_champion_table(page, limit=5)
+        except ScrapingError:
+            page = ""
+        champions = self._parse_leagueofgraphs_champion_table(page, limit=5) if page else []
+        if champions:
+            return champions
+        return []
 
-    def _load_ranked_preferences_from_opgg(
-        self,
-        platform: str,
-        game_name: str,
-        tag_line: str,
-    ) -> list[ChampionPlayStat]:
-        opgg_region = PLATFORM_TO_OPGG_REGION.get(platform)
-        if not opgg_region:
-            return []
-
-        url = f"https://op.gg/lol/summoners/{opgg_region}/{self._slug(game_name, tag_line)}?queue_type=SOLORANKED"
-        page = self._get_text(url, context="OP.GG campeones SoloQ")
+    def _parse_ranked_preferences_from_opgg_page(self, page: str) -> list[ChampionPlayStat]:
         description_match = re.search(
             r'<meta name="description" content="([^"]+)"',
             page,
@@ -2081,14 +2125,36 @@ class RiotApiClient:
         entries = re.findall(r"([A-Za-z0-9' .:-]+?)\s*-\s*(\d+)Win\s+(\d+)Lose", description, re.IGNORECASE)
         champions: list[ChampionPlayStat] = []
         for champion_name, wins, losses in entries[:5]:
+            cleaned_name = self._clean_html_text(champion_name)
             champions.append(
                 ChampionPlayStat(
-                    champion=self._clean_html_text(champion_name),
-                    champion_id=0,
+                    champion=cleaned_name,
+                    champion_id=self._champion_id_from_name(cleaned_name),
                     games=int(wins) + int(losses),
                 )
             )
         return champions
+
+    def _load_ranked_preferences_from_opgg(
+        self,
+        platform: str,
+        game_name: str,
+        tag_line: str,
+        page: str | None = None,
+    ) -> list[ChampionPlayStat]:
+        opgg_region = PLATFORM_TO_OPGG_REGION.get(platform)
+        if not opgg_region:
+            return []
+
+        if page is not None:
+            champions = self._parse_ranked_preferences_from_opgg_page(page)
+            if champions:
+                return champions
+
+        url = f"https://op.gg/lol/summoners/{opgg_region}/{self._slug(game_name, tag_line)}?queue_type=SOLORANKED"
+        return self._parse_ranked_preferences_from_opgg_page(
+            self._get_text(url, context="OP.GG campeones SoloQ")
+        )
 
     @staticmethod
     def _fallback_most_played_champions(matches: list[MatchSummary]) -> list[ChampionPlayStat]:
@@ -2156,7 +2222,7 @@ class RiotApiClient:
         headers = {"X-Requested-With": "XMLHttpRequest"}
         try:
             source = self._get_text(url, context="Porofessor partida en vivo", headers=headers)
-        except RiotApiError:
+        except ScrapingError:
             return None
 
         lowered = source.lower()
@@ -2337,22 +2403,24 @@ class RiotApiClient:
         return participants
 
     def _load_ranked_entries(self, platform: str, game_name: str, tag_line: str) -> tuple[list[dict], bool]:
+        ranked_source_available = False
         try:
-            entries = self._load_ranked_from_riot(platform, game_name, tag_line)
-        except RiotApiError:
+            entries = self._load_ranked_from_opgg(platform, game_name, tag_line)
+            ranked_source_available = True
+        except ScrapingError:
             entries = []
         if entries:
             return entries, True
 
-        entries = self._load_ranked_from_opgg(platform, game_name, tag_line)
+        try:
+            entries = self._load_leagueofgraphs_ranked(platform, game_name, tag_line)
+            ranked_source_available = True
+        except ScrapingError:
+            entries = []
         if entries:
             return entries, True
 
-        entries = self._load_leagueofgraphs_ranked(platform, game_name, tag_line)
-        if entries:
-            return entries, True
-
-        return [], False
+        return [], ranked_source_available
 
     def _parse_ranked_entries(
         self,
@@ -2407,14 +2475,23 @@ class RiotApiClient:
         elif flex and flex.total_games > 0:
             global_winrate = round(flex.winrate, 1)
         else:
-            ugg_winrate = self._load_winrate_from_ugg(platform, profile.game_name, profile.tag_line)
+            try:
+                ugg_winrate = self._load_winrate_from_ugg(platform, profile.game_name, profile.tag_line)
+            except ScrapingError:
+                ugg_winrate = None
             if ugg_winrate is not None:
                 global_winrate = round(ugg_winrate, 1)
 
         if ranked_games is None:
-            ranked_games = self._load_games_from_opgg(platform, profile.game_name, profile.tag_line)
+            try:
+                ranked_games = self._load_games_from_opgg(platform, profile.game_name, profile.tag_line)
+            except ScrapingError:
+                ranked_games = None
         if ranked_games is None:
-            ranked_games = self._load_games_from_ugg(platform, profile.game_name, profile.tag_line)
+            try:
+                ranked_games = self._load_games_from_ugg(platform, profile.game_name, profile.tag_line)
+            except ScrapingError:
+                ranked_games = None
 
         most_played_champions: list[ChampionPlayStat] = []
         most_played_roles: list[RolePlayStat] = []
@@ -2424,7 +2501,7 @@ class RiotApiClient:
                 profile.game_name,
                 profile.tag_line,
             )
-        except RiotApiError:
+        except ScrapingError:
             most_played_champions, most_played_roles = [], []
 
         matches = profile.matches if include_matches else []
@@ -2456,8 +2533,16 @@ class RiotApiClient:
         tag_line: str,
         platform: str,
     ) -> PlayerSummary:
-        profile = self._load_profile_from_leagueofgraphs(platform, game_name, tag_line)
+        profile, _, opgg_page = self._load_profile_with_fallbacks(
+            platform,
+            game_name,
+            tag_line,
+            include_matches=False,
+        )
         league_entries, ranked_available = self._load_ranked_entries(platform, profile.game_name, profile.tag_line)
+        if not league_entries and opgg_page:
+            league_entries = self._parse_ranked_from_opgg_page(opgg_page)
+            ranked_available = True
         return self._build_summary(
             profile=profile,
             platform=platform,
@@ -2476,67 +2561,49 @@ class RiotApiClient:
         store_today_snapshot: bool = True,
     ) -> PlayerSummary:
         cached = None if force_refresh else self._load_cached_ranking_summary(platform, game_name, tag_line)
-        if cached is not None and (cached.most_played_champions or not cached.soloq):
+        if cached is not None:
+            cached.most_played_champions = self._fill_champion_ids(cached.most_played_champions)
             if cached.top_mastery_champion_id <= 0:
-                mastery_champion_id, mastery_level, mastery_points = self._fetch_top_champion_mastery(
-                    platform,
-                    cached.game_name or game_name,
-                    cached.tag_line or tag_line,
+                cached.top_mastery_champion_id = next(
+                    (champion.champion_id for champion in cached.most_played_champions if champion.champion_id > 0),
+                    0,
                 )
-                if mastery_champion_id > 0 or mastery_level is not None or mastery_points is not None:
-                    cached.top_mastery_champion_id = mastery_champion_id
-                    cached.top_mastery_level = mastery_level
-                    cached.top_mastery_points = mastery_points
-                    self._store_cached_ranking_summary(
-                        cached,
-                        cache_game_name=game_name,
-                        cache_tag_line=tag_line,
-                    )
             return cached
 
         try:
-            region = PLATFORM_TO_LEAGUEOFGRAPHS_REGION.get(platform)
-            if not region:
-                raise RiotApiError("LeagueOfGraphs: plataforma no soportada.")
-            league_page = self._get_text(
-                f"https://www.leagueofgraphs.com/summoner/{region}/{self._slug(game_name, tag_line)}",
-                context="LeagueOfGraphs perfil",
-                force_refresh=force_refresh,
-            )
-            profile = self._load_profile_from_leagueofgraphs(
+            profile, league_page, opgg_page = self._load_profile_with_fallbacks(
                 platform,
                 game_name,
                 tag_line,
                 include_matches=False,
-                page=league_page,
                 force_refresh=force_refresh,
             )
 
-            try:
-                league_entries = self._load_ranked_from_riot(platform, profile.game_name, profile.tag_line)
-            except RiotApiError:
-                league_entries = []
-
-            ranked_available = bool(league_entries)
-            opgg_page = None
+            ranked_available = True
+            league_entries = []
             if not league_entries:
-                opgg_page = self._load_opgg_profile_page(
-                    platform,
-                    profile.game_name,
-                    profile.tag_line,
-                    force_refresh=force_refresh,
-                )
+                if opgg_page is None:
+                    try:
+                        opgg_page = self._load_opgg_profile_page(
+                            platform,
+                            profile.game_name,
+                            profile.tag_line,
+                            force_refresh=force_refresh,
+                        )
+                    except ScrapingError:
+                        opgg_page = None
                 league_entries = self._parse_ranked_from_opgg_page(opgg_page) if opgg_page else []
-                ranked_available = bool(league_entries)
             if not league_entries:
-                league_entries = self._load_leagueofgraphs_ranked(
-                    platform,
-                    profile.game_name,
-                    profile.tag_line,
-                    page=league_page,
-                    force_refresh=force_refresh,
-                )
-                ranked_available = bool(league_entries)
+                try:
+                    league_entries = self._load_leagueofgraphs_ranked(
+                        platform,
+                        profile.game_name,
+                        profile.tag_line,
+                        page=league_page,
+                        force_refresh=force_refresh,
+                    )
+                except ScrapingError:
+                    league_entries = []
 
             soloq, flex, soloq_winrate, flex_winrate = self._parse_ranked_entries(league_entries)
             global_winrate = None
@@ -2555,13 +2622,23 @@ class RiotApiClient:
                 profile.game_name,
                 profile.tag_line,
                 force_refresh=force_refresh,
+                opgg_page=opgg_page,
             )
-            mastery_champion_id, mastery_level, mastery_points = self._fetch_top_champion_mastery(
-                platform,
-                profile.game_name,
-                profile.tag_line,
-                page=league_page,
-            )
+            most_played_champions = self._fill_champion_ids(most_played_champions)
+            if league_page is not None:
+                mastery_champion_id, mastery_level, mastery_points = self._fetch_top_champion_mastery(
+                    platform,
+                    profile.game_name,
+                    profile.tag_line,
+                    page=league_page,
+                )
+            else:
+                mastery_champion_id, mastery_level, mastery_points = 0, None, None
+            if mastery_champion_id <= 0:
+                mastery_champion_id = next(
+                    (champion.champion_id for champion in most_played_champions if champion.champion_id > 0),
+                    0,
+                )
             summary = PlayerSummary(
                 game_name=profile.game_name,
                 tag_line=profile.tag_line,
@@ -2587,7 +2664,7 @@ class RiotApiClient:
                 self._append_daily_lp_snapshot(summary, cache_game_name=game_name, cache_tag_line=tag_line)
             self._store_cached_ranking_summary(summary, cache_game_name=game_name, cache_tag_line=tag_line)
             return summary
-        except RiotApiError:
+        except ScrapingError:
             stale = self._load_cached_ranking_summary(platform, game_name, tag_line, max_age_seconds=None)
             if stale is not None:
                 return stale
@@ -2610,18 +2687,9 @@ class RiotApiClient:
         current_rank_text = (
             ranking_summary.soloq.display_rank
             if ranking_summary.soloq is not None
-            else ("Sin SoloQ" if ranking_summary.ranked_available else "No disponible")
+            else ("Sin SoloQ" if ranking_summary.ranked_available else "Sin datos")
         )
-        riot_today_matches: list[MatchSummary] = []
         public_today_matches: list[MatchSummary] = []
-        try:
-            riot_today_matches = self._load_today_matches_from_riot(
-                platform,
-                ranking_summary.game_name,
-                ranking_summary.tag_line,
-            )
-        except RiotApiError:
-            riot_today_matches = []
         try:
             public_today_matches = self._load_today_matches_from_leagueofgraphs(
                 platform,
@@ -2629,9 +2697,11 @@ class RiotApiClient:
                 ranking_summary.tag_line,
                 force_refresh=force_refresh,
             )
-        except RiotApiError:
+        except ScrapingError:
             public_today_matches = []
-        today_matches = self._merge_today_match_sources(riot_today_matches, public_today_matches)
+        today_matches = public_today_matches
+        display_today_matches = today_matches[:5]
+        today_match_count = len(today_matches)
         current_lp_score = self._lp_score_from_ranked_entry(ranking_summary.soloq)
         if current_lp_score is None:
             return TodayLpSummary(
@@ -2644,7 +2714,7 @@ class RiotApiClient:
                 baseline_local_time=None,
                 baseline_source="",
                 baseline_note="Sin datos de SoloQ para hoy.",
-                today_matches=today_matches,
+                today_matches=display_today_matches,
             )
 
         now_local = datetime.now().astimezone()
@@ -2670,7 +2740,7 @@ class RiotApiClient:
                 ranking_summary.tag_line,
                 force_refresh=force_refresh,
             )
-        except RiotApiError:
+        except ScrapingError:
             opgg_page = None
         if opgg_page:
             candidates.extend(self._build_today_candidates_from_opgg_page(opgg_page))
@@ -2695,11 +2765,25 @@ class RiotApiClient:
             now_local,
             first_match_at=first_match_at,
             current_total_games=ranking_summary.soloq.total_games if ranking_summary.soloq is not None else None,
-            today_match_count=len(today_matches),
+            today_match_count=today_match_count,
+            current_lp_score=current_lp_score,
         )
         self._append_daily_lp_snapshot(ranking_summary, cache_game_name=game_name, cache_tag_line=tag_line)
 
         if baseline is None:
+            if today_match_count == 0:
+                return TodayLpSummary(
+                    player=ranking_summary,
+                    lp_change=0,
+                    current_lp_score=current_lp_score,
+                    baseline_lp_score=current_lp_score,
+                    current_rank_text=current_rank_text,
+                    baseline_rank_text=current_rank_text,
+                    baseline_local_time=now_local.strftime("%d %b %H:%M"),
+                    baseline_source="Referencia actual",
+                    baseline_note="Sin partidas detectadas hoy; se toma el LP actual como base.",
+                    today_matches=display_today_matches,
+                )
             return TodayLpSummary(
                 player=ranking_summary,
                 lp_change=None,
@@ -2710,7 +2794,7 @@ class RiotApiClient:
                 baseline_local_time=None,
                 baseline_source="",
                 baseline_note="Sin referencia historica cercana a las 00:00.",
-                today_matches=today_matches,
+                today_matches=display_today_matches,
             )
 
         baseline_local_time = baseline.observed_at.strftime("%d %b %H:%M")
@@ -2724,7 +2808,7 @@ class RiotApiClient:
             baseline_local_time=baseline_local_time,
             baseline_source=baseline.source,
             baseline_note=f"{baseline.source} {baseline_local_time}",
-            today_matches=today_matches,
+            today_matches=display_today_matches,
         )
 
     def fetch_cached_player_ranking(
@@ -2748,9 +2832,17 @@ class RiotApiClient:
         platform: str,
     ) -> PlayerSummary:
         self._emit_progress("Cargando perfil externo...")
-        profile = self._load_profile_from_leagueofgraphs(platform, game_name, tag_line)
+        profile, _, opgg_page = self._load_profile_with_fallbacks(
+            platform,
+            game_name,
+            tag_line,
+            include_matches=True,
+        )
         self._emit_progress("Cargando ranked desde fuentes externas...")
         league_entries, ranked_available = self._load_ranked_entries(platform, profile.game_name, profile.tag_line)
+        if not league_entries and opgg_page:
+            league_entries = self._parse_ranked_from_opgg_page(opgg_page)
+            ranked_available = True
 
         match_count = len(profile.matches)
         if match_count:
@@ -2777,44 +2869,38 @@ class RiotApiClient:
         fast_mode: bool = False,
     ) -> LiveGameParticipantSummary:
         del fast_mode
-        profile = self._load_profile_from_leagueofgraphs(platform, game_name, tag_line)
-        spectator = None
+        direct_live = self._load_live_game_from_porofessor(
+            platform=platform,
+            game_name=game_name,
+            tag_line=tag_line,
+        )
+        if direct_live is not None:
+            return direct_live
+
         try:
-            spectator = self._load_spectator_session(platform, profile.game_name, profile.tag_line)
-        except RiotApiError:
-            spectator = None
+            profile, _, _ = self._load_profile_with_fallbacks(
+                platform,
+                game_name,
+                tag_line,
+                include_matches=False,
+            )
+        except ScrapingError:
+            return LiveGameParticipantSummary(
+                game_name=game_name,
+                tag_line=tag_line,
+                platform=platform,
+                in_game=False,
+                mastery_level=None,
+                status_text="No se pudo confirmar la partida con las fuentes publicas",
+            )
+
         fallback = self._load_live_game_from_porofessor(
             platform=platform,
             game_name=profile.game_name,
             tag_line=profile.tag_line,
         )
         if fallback is not None:
-            fallback.spectate_url = f"{self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line)}/ingame"
-            fallback.spectator = spectator
             return fallback
-
-        if spectator is not None:
-            return LiveGameParticipantSummary(
-                game_name=profile.game_name,
-                tag_line=profile.tag_line,
-                platform=platform,
-                in_game=True,
-                champion="N/D",
-                champion_id=0,
-                mastery_level=None,
-                role="UNKNOWN",
-                game=LiveGameSummary(
-                    queue_name="Partida activa",
-                    game_mode="Partida activa",
-                    map_name="Summoner's Rift",
-                    duration_min=0,
-                    team_size=0,
-                    enemy_team_size=0,
-                ),
-                status_text="Partida activa detectada por Riot API",
-                spectate_url=f"{self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line)}/ingame",
-                spectator=spectator,
-            )
 
         return LiveGameParticipantSummary(
             game_name=profile.game_name,
@@ -2823,8 +2909,6 @@ class RiotApiClient:
             in_game=False,
             mastery_level=None,
             status_text="No se pudo confirmar la partida con las fuentes externas",
-            spectate_url=f"{self.build_opgg_profile_url(platform, profile.game_name, profile.tag_line)}/ingame",
-            spectator=spectator,
         )
 
 
