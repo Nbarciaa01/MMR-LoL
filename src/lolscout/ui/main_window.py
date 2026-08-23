@@ -94,7 +94,6 @@ RANKING_PLAYERS = [
     ("Redsh19", "1971"),
     ("Daorru", "EUW"),
     ("BLEEEEEHH", "K1TTY"),
-    ("HALLOOOOO", "K1TTY"),
     ("LUDA png", "EUW"),
     ("StephanieBullet", "EUW"),
     ("RoZaNiAs", "EUW"),
