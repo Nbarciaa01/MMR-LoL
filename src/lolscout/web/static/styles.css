@@ -129,10 +129,11 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .rank { font-weight: 750; }
 .metric strong { display: block; font-size: 17px; }
 .metric span { color: var(--muted); font-size: 11px; }
-.opgg-link { width: 54px; height: 36px; display: grid; place-items: center; justify-self: end; border: 1px solid #6d95ed; border-radius: 6px; background: #5383e8; box-shadow: 0 6px 16px #0003; transition: border-color .16s ease, background-color .16s ease, transform .16s ease; }
-.opgg-link img { width: 39px; height: auto; display: block; }
-.opgg-link:hover { border-color: #9ab7f4; background: #406fd0; transform: translateY(-1px); }
-.opgg-link:focus-visible { outline: 2px solid #a9c1f5; outline-offset: 2px; }
+.opgg-link { width: 54px; height: 26px; display: grid; place-items: center; justify-self: end; border: 0; border-radius: 0; background: #171a20; clip-path: polygon(10% 0, 100% 0, 90% 100%, 0 100%); opacity: .78; transition: background-color .16s ease, opacity .16s ease, transform .16s ease; }
+.opgg-link img { width: 32px; height: auto; display: block; opacity: .72; transition: opacity .16s ease; }
+.opgg-link:hover { background: #232832; opacity: 1; transform: translateY(-1px); }
+.opgg-link:hover img { opacity: 1; }
+.opgg-link:focus-visible { outline: 2px solid #8e99aa; outline-offset: 2px; }
 .opgg-link.is-disabled { opacity: .35; filter: grayscale(1); }
 
 .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -350,8 +351,8 @@ body:not(.is-home) .content::before { position: absolute; top: 0; right: 32px; l
   .player-row { grid-template-columns: 28px minmax(0, 1fr) 92px 42px; gap: 8px; padding: 10px; }
   .player-row .position { width: 28px; height: 28px; }
   .player-row .winrate, .player-row .mmr { display: none; }
-  .opgg-link { width: 40px; height: 34px; }
-  .opgg-link img { width: 30px; }
+  .opgg-link { width: 40px; height: 24px; }
+  .opgg-link img { width: 27px; }
   .identity img { width: 40px; height: 40px; }
   .rank { font-size: 12px; }
   .summary-grid, .build-sections { grid-template-columns: 1fr; }
