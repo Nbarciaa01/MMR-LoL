@@ -163,12 +163,13 @@ function renderToday(data) {
     if (!result.ok) return `<article class="summary-card is-error"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
     const s = result.summary;
     const changeClass = s.lp_change > 0 ? "positive" : s.lp_change < 0 ? "negative" : "";
+    const emptyMatches = result.source === "riot" ? "Sin SoloQ hoy" : "Historial no disponible";
     const matches = (s.today_matches || []).map(match => {
       const outcome = match.won ? "Victoria" : "Derrota";
       const label = `${outcome} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`;
       return `<span class="match-result ${match.won ? "win" : "loss"}" data-outcome="${match.won ? "W" : "L"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
     }).join("");
-    return `<article class="summary-card today-card ${changeClass || "neutral"}"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || "<span>Sin SoloQ hoy</span>"}</div></article>`;
+    return `<article class="summary-card today-card ${changeClass || "neutral"}"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || `<span>${emptyMatches}</span>`}</div></article>`;
   }).join("");
   content.innerHTML = `<div class="summary-grid">${cards}</div>`;
 }
