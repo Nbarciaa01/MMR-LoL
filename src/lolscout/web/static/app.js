@@ -146,6 +146,9 @@ function renderRanking(data) {
     const mmr = p.estimated_mmr == null ? "—" : p.estimated_mmr.toLocaleString("es-ES");
     const winrate = p.global_winrate == null ? "—" : `${p.global_winrate}%`;
     const games = p.ranked_games == null ? "—" : p.ranked_games;
+    const opggLink = p.opgg_url
+      ? `<a class="opgg-link" href="${escapeHtml(p.opgg_url)}" target="_blank" rel="noopener noreferrer" title="Abrir ${escapeHtml(p.game_name)} en OP.GG" aria-label="Abrir ${escapeHtml(p.game_name)} en OP.GG"><img src="/static/assets/opgg-logo.svg" alt=""></a>`
+      : `<span class="opgg-link is-disabled" aria-hidden="true"><img src="/static/assets/opgg-logo.svg" alt=""></span>`;
     return `<article class="player-row" data-position="${index + 1}">
       <div class="position">${index + 1}</div>
       ${playerIdentity(p)}
@@ -153,9 +156,10 @@ function renderRanking(data) {
       <div class="metric mmr"><strong>${mmr}</strong><span>MMR</span></div>
       <div class="metric winrate"><strong>${winrate}</strong><span>Winrate</span></div>
       <div class="metric games"><strong>${games}</strong><span>Partidas</span></div>
+      ${opggLink}
     </article>`;
   }).join("");
-  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>MMR</span><span>WR</span><span>Partidas</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
+  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>MMR</span><span>WR</span><span>Partidas</span><span class="sr-only">OP.GG</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
 }
 
 function renderToday(data) {

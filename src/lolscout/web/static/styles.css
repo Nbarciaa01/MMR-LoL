@@ -113,7 +113,7 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 
 .ranking-head, .player-row {
   display: grid;
-  grid-template-columns: 50px minmax(210px, 1.8fr) minmax(170px, 1fr) 100px 100px 100px;
+  grid-template-columns: 50px minmax(210px, 1.8fr) minmax(170px, 1fr) 100px 100px 100px 58px;
   gap: 16px;
   align-items: center;
 }
@@ -122,12 +122,18 @@ h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1; letter-spacin
 .player-row { min-height: 80px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .position { color: var(--gold); font-size: 20px; font-weight: 900; }
 .identity { min-width: 0; display: flex; align-items: center; gap: 12px; }
+.identity > div { min-width: 0; }
 .identity img { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 6px; object-fit: cover; background: var(--surface-2); }
 .identity strong, .identity span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .identity span, .subtext { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .rank { font-weight: 750; }
 .metric strong { display: block; font-size: 17px; }
 .metric span { color: var(--muted); font-size: 11px; }
+.opgg-link { width: 54px; height: 36px; display: grid; place-items: center; justify-self: end; border: 1px solid #6d95ed; border-radius: 6px; background: #5383e8; box-shadow: 0 6px 16px #0003; transition: border-color .16s ease, background-color .16s ease, transform .16s ease; }
+.opgg-link img { width: 39px; height: auto; display: block; }
+.opgg-link:hover { border-color: #9ab7f4; background: #406fd0; transform: translateY(-1px); }
+.opgg-link:focus-visible { outline: 2px solid #a9c1f5; outline-offset: 2px; }
+.opgg-link.is-disabled { opacity: .35; filter: grayscale(1); }
 
 .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .summary-card { min-height: 145px; padding: 18px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
@@ -306,7 +312,7 @@ body:not(.is-home) .content::before { position: absolute; top: 0; right: 32px; l
   .tab { min-width: 82px; height: 48px; }
   .overview { min-height: 190px; padding: 38px 22px; }
   .ranking-head { display: none; }
-  .player-row { grid-template-columns: 34px minmax(160px, 1fr) 120px 76px 76px; }
+  .player-row { grid-template-columns: 34px minmax(160px, 1fr) 120px 76px 76px 54px; }
   .player-row .games { display: none; }
   .summary-grid, .build-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-card:has(.live-roster) { grid-column: 1 / -1; }
@@ -341,9 +347,11 @@ body:not(.is-home) .content::before { position: absolute; top: 0; right: 32px; l
   .home-hero-copy h2 { font-size: 39px; }
   .home-actions { right: 12px; bottom: 12px; left: 12px; gap: 7px; }
   .home-actions button { min-height: 82px; padding: 12px; }
-  .player-row { grid-template-columns: 28px minmax(0, 1fr) 92px; gap: 8px; padding: 10px; }
+  .player-row { grid-template-columns: 28px minmax(0, 1fr) 92px 42px; gap: 8px; padding: 10px; }
   .player-row .position { width: 28px; height: 28px; }
   .player-row .winrate, .player-row .mmr { display: none; }
+  .opgg-link { width: 40px; height: 34px; }
+  .opgg-link img { width: 30px; }
   .identity img { width: 40px; height: 40px; }
   .rank { font-size: 12px; }
   .summary-grid, .build-sections { grid-template-columns: 1fr; }
