@@ -374,6 +374,22 @@ class RiotClient:
                 today_matches=matches[:5],
             )
 
+        if not matches:
+            tracker._append_daily_lp_snapshot(player, cache_game_name=game_name, cache_tag_line=tag_line)
+            now_local = app_now()
+            return TodayLpSummary(
+                player=player,
+                lp_change=0,
+                current_lp_score=current_score,
+                baseline_lp_score=current_score,
+                current_rank_text=rank_text,
+                baseline_rank_text=rank_text,
+                baseline_local_time=now_local.strftime("%d %b %H:%M"),
+                baseline_source="Riot API",
+                baseline_note="Sin partidas SoloQ detectadas hoy.",
+                today_matches=[],
+            )
+
         now_local = app_now()
         start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         candidates = tracker._load_daily_lp_snapshot_candidates(platform, game_name, tag_line)

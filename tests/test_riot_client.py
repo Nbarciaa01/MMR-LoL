@@ -190,6 +190,48 @@ class RiotClientTests(unittest.TestCase):
         self.assertEqual(summary.baseline_lp_score, current_score - 19)
         load_history.assert_called_once()
 
+    def test_today_summary_ignores_stale_baseline_when_riot_returns_no_matches(self) -> None:
+        soloq = RankedEntry(
+            queue_type="RANKED_SOLO_5x5",
+            tier="PLATINUM",
+            rank="III",
+            league_points=98,
+            wins=21,
+            losses=10,
+        )
+        player = PlayerSummary(
+            game_name="Dark Nøwel",
+            tag_line="007",
+            summoner_level=100,
+            profile_icon_id=1,
+            platform="EUW1",
+            soloq=soloq,
+        )
+        current_score = ScrapingClient._lp_score_from_ranked_entry(soloq)
+        self.client.resolve_identity = Mock(return_value=RiotIdentity(
+            puuid="player-puuid",
+            summoner_id="summoner-id",
+            game_name="Dark Nøwel",
+            tag_line="007",
+            summoner_level=100,
+            profile_icon_id=1,
+        ))
+        self.client._ranking_from_identity = Mock(return_value=player)
+        self.client.fetch_today_matches = Mock(return_value=[])
+
+        with (
+            patch.object(ScrapingClient, "_load_daily_lp_snapshot_candidates") as load_candidates,
+            patch.object(ScrapingClient, "_append_daily_lp_snapshot") as append_snapshot,
+        ):
+            summary = self.client.fetch_today_summary("Dark Nøwel", "007", "EUW1")
+
+        self.assertEqual(summary.lp_change, 0)
+        self.assertEqual(summary.baseline_lp_score, current_score)
+        self.assertEqual(summary.today_matches, [])
+        self.assertEqual(summary.baseline_source, "Riot API")
+        load_candidates.assert_not_called()
+        append_snapshot.assert_called_once()
+
     def test_spectator_v5_uses_puuid_and_handles_not_in_game(self) -> None:
         self.client.resolve_identity = Mock(return_value=RiotIdentity(
             puuid="player-puuid",
