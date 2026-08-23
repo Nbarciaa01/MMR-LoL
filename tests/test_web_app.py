@@ -7,7 +7,14 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.lolscout.web_app import ConfigInput, _require_admin, privacy, terms, update_config
+from src.lolscout.web_app import (
+    ConfigInput,
+    _require_admin,
+    _soloq_sort_key,
+    privacy,
+    terms,
+    update_config,
+)
 
 
 class WebAppTests(unittest.TestCase):
@@ -49,6 +56,26 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response["players"], 1)
         saved = save_config.call_args.args[0]
         self.assertEqual(saved.ranking_players, [["Player", "EUW"]])
+
+    def test_soloq_ranking_uses_tier_division_and_lp_instead_of_estimated_mmr(self) -> None:
+        players = [
+            {"player": {"game_name": "Platinum", "estimated_mmr": 1900, "soloq": {
+                "tier": "PLATINUM", "rank": "I", "league_points": 99,
+            }}},
+            {"player": {"game_name": "Emerald", "estimated_mmr": 1500, "soloq": {
+                "tier": "EMERALD", "rank": "IV", "league_points": 0,
+            }}},
+            {"player": {"game_name": "EmeraldHigh", "estimated_mmr": 1400, "soloq": {
+                "tier": "EMERALD", "rank": "III", "league_points": 25,
+            }}},
+        ]
+
+        players.sort(key=_soloq_sort_key, reverse=True)
+
+        self.assertEqual(
+            [item["player"]["game_name"] for item in players],
+            ["EmeraldHigh", "Emerald", "Platinum"],
+        )
 
 
 if __name__ == "__main__":

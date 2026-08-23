@@ -173,6 +173,34 @@ def _cache_key(view: str, platform: str, source: str, players: list[tuple[str, s
     return f"{view}:{platform}:{source}:{fingerprint}"
 
 
+_TIER_ORDER = {
+    "IRON": 0,
+    "BRONZE": 1,
+    "SILVER": 2,
+    "GOLD": 3,
+    "PLATINUM": 4,
+    "EMERALD": 5,
+    "DIAMOND": 6,
+    "MASTER": 7,
+    "GRANDMASTER": 8,
+    "CHALLENGER": 9,
+}
+_DIVISION_ORDER = {"IV": 0, "III": 1, "II": 2, "I": 3}
+
+
+def _soloq_sort_key(item: dict) -> tuple[bool, int, int, int]:
+    soloq = item.get("player", {}).get("soloq") or {}
+    tier = str(soloq.get("tier") or "").upper()
+    division = str(soloq.get("rank") or "").upper()
+    lp = int(soloq.get("league_points") or 0)
+    return (
+        tier in _TIER_ORDER,
+        _TIER_ORDER.get(tier, -1),
+        _DIVISION_ORDER.get(division, 0),
+        lp,
+    )
+
+
 def _get_cached_response(cache_key: str, force_refresh: bool) -> dict | None:
     if force_refresh:
         return None
@@ -289,13 +317,7 @@ def ranking(
                 }
             )
 
-    results.sort(
-        key=lambda item: (
-            item.get("player", {}).get("estimated_mmr") is not None,
-            item.get("player", {}).get("estimated_mmr") or -1,
-        ),
-        reverse=True,
-    )
+    results.sort(key=_soloq_sort_key, reverse=True)
     payload = {"platform": platform, "players": results}
     _set_cached_response(cache_key, payload, 90)
     return payload
