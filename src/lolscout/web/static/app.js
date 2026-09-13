@@ -14,7 +14,7 @@ const viewCopy = {
   ranking: ["Ranking SoloQ", "Clasificación oficial, LP y rendimiento del grupo."],
   today: ["Lo que ha pasado hoy", "Balance de LP desde las 00:00 y partidas recientes."],
   live: ["En partida", "Estado actual del grupo y composiciones detectadas."],
-  builds: ["Builds por campeón", "Runas, objetos, habilidades y matchups en una consulta rápida."],
+  builds: ["Builds por campeón", "Consulta las builds de cada campeón en Lolalytics."],
 };
 
 const homeHeroes = [
@@ -74,7 +74,7 @@ function renderHome() {
   const [, champion] = state.homeHero;
   content.innerHTML = `<div class="home-shell">
     <section class="home-intro">
-      <div class="home-intro-brand"><div class="home-logo"><span class="brand-mark" aria-hidden="true">M</span></div><div><p class="eyebrow">Proyecto del grupo MMR</p><h1>MMRQ Challenge</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una aplicación privada creada para nuestro grupo de amigos y construida alrededor de nuestros Riot IDs.</p></div></div>
+      <div class="home-intro-brand"><div class="home-logo"><img src="/assets/mmr-logo-app.png" alt=""></div><div><p class="eyebrow">Proyecto del grupo MMR</p><h1>MMRQ Challenge</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una aplicación privada creada para nuestro grupo de amigos y construida alrededor de nuestros Riot IDs.</p></div></div>
       <aside><p class="eyebrow">Entre amigos</p><h2>SoloQ, live y builds</h2><p>Seguimiento directo de las cuentas del grupo MMR con datos oficiales de Riot y consultas rápidas para cada partida.</p></aside>
     </section>
     <section class="home-hero">
@@ -129,15 +129,12 @@ async function putJson(url, body, token) {
 function playerIdentity(player) {
   const icon = player.profile_icon_url
     ? `<img src="${escapeHtml(player.profile_icon_url)}" alt="" loading="lazy">`
-    : `<span class="identity-placeholder" aria-hidden="true">M</span>`;
+    : `<img src="/assets/mmr-logo-app.png" alt="">`;
   return `<div class="identity">${icon}<div><strong>${escapeHtml(player.game_name)}</strong><span>#${escapeHtml(player.tag_line)}</span></div></div>`;
 }
 
 function championIconUrl(championId) {
-  const id = Number(championId) || 0;
-  return id > 0
-    ? `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${id}.png`
-    : "/assets/mmr-logo-app.png";
+  return state.champions?.find(champion => champion.id === Number(championId))?.icon_url || "/assets/mmr-logo-app.png";
 }
 
 function renderRanking(data) {
@@ -194,31 +191,10 @@ function renderChampions(champions) {
   const grid = document.querySelector("#champion-grid");
   const draw = query => {
     const filtered = champions.filter(champion => champion.name.toLowerCase().includes(query.toLowerCase()));
-    grid.innerHTML = filtered.map(champion => `<button class="champion" data-slug="${escapeHtml(champion.slug)}"><img src="${escapeHtml(champion.icon_url)}" alt="" loading="lazy"><strong>${escapeHtml(champion.name)}</strong></button>`).join("");
-    grid.querySelectorAll(".champion").forEach(button => button.addEventListener("click", () => loadBuild(button.dataset.slug)));
+    grid.innerHTML = filtered.map(champion => `<a class="champion" href="https://lolalytics.com/lol/${encodeURIComponent(champion.slug)}/build/" target="_blank" rel="noopener noreferrer" title="Ver builds en Lolalytics"><img src="${escapeHtml(champion.icon_url)}" alt="" loading="lazy"><strong>${escapeHtml(champion.name)}</strong></a>`).join("");
   };
   document.querySelector("#champion-search").addEventListener("input", event => draw(event.target.value));
   draw("");
-}
-
-function assetImages(items = []) {
-  return items.map(item => `<img src="${escapeHtml(item.icon_url || "/assets/mmr-logo-app.png")}" alt="${escapeHtml(item.name)}" title="${escapeHtml(item.name)}" loading="lazy">`).join("");
-}
-
-async function loadBuild(slug) {
-  const request = startContentRequest();
-  loading("Cargando build…");
-  try {
-    const build = await getJson(`/api/builds/${encodeURIComponent(slug)}`, { signal: request.controller.signal });
-    if (!isCurrentContentRequest(request)) return;
-    const sections = [build.starting_items, build.core_build].filter(Boolean).map(section => `<section class="build-section"><h3>${escapeHtml(section.title)}</h3><div class="asset-list">${assetImages(section.items)}</div></section>`).join("");
-    content.innerHTML = `<div class="build-detail"><button class="back-button" id="back-builds">← Todos los campeones</button><div class="build-title"><img src="${escapeHtml(build.icon_url)}" alt=""><div><h2>${escapeHtml(build.champion)}</h2><p>${escapeHtml(build.summary || `${build.role || ""} · ${build.patch || ""}`)}</p></div></div><div class="build-sections"><section class="build-section"><h3>Runas</h3><div class="asset-list">${assetImages([...(build.primary_runes || []), ...(build.secondary_runes || [])])}</div></section><section class="build-section"><h3>Hechizos</h3><div class="asset-list">${assetImages(build.summoner_spells)}</div></section>${sections}</div></div>`;
-    document.querySelector("#back-builds").addEventListener("click", () => renderChampions(state.champions));
-  } catch (error) {
-    if (error.name !== "AbortError" && isCurrentContentRequest(request)) showError(error.message);
-  } finally {
-    finishContentRequest(request);
-  }
 }
 
 async function loadView(force = false) {
@@ -263,6 +239,7 @@ async function loadView(force = false) {
 async function initialise() {
   try {
     state.config = await getJson("/api/config");
+    try { state.champions = (await getJson("/api/builds/champions")).champions; } catch { state.champions = null; }
     state.platform = state.config.default_platform;
     const requestedView = location.hash.slice(1);
     if (Object.hasOwn(viewCopy, requestedView)) state.view = requestedView;

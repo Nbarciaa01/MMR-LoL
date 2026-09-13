@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -20,7 +20,7 @@ from .models import (
     RankedEntry,
     TodayLpSummary,
 )
-from .scraping_client import ScrapingClient, ScrapingError, estimate_mmr
+from .scraping_client import ScrapingClient
 from .time_utils import app_now, to_app_timezone
 
 
@@ -118,6 +118,9 @@ class RiotClient:
         ttl_seconds: int = 0,
         allow_not_found: bool = False,
     ) -> object | None:
+        target = urlsplit(url)
+        if target.scheme != "https" or not (target.hostname or "").endswith(".api.riotgames.com"):
+            raise RiotApiError("Destino de API no permitido.")
         now = time.monotonic()
         if ttl_seconds > 0:
             with self._cache_lock:
@@ -130,10 +133,13 @@ class RiotClient:
                 url,
                 headers={"X-Riot-Token": self.api_key, "Accept": "application/json"},
                 timeout=self.timeout,
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             raise RiotApiError("No se pudo conectar con Riot Games.") from exc
 
+        if 300 <= response.status_code < 400:
+            raise RiotApiError("Riot devolvio una redireccion inesperada.")
         if response.status_code == 401:
             raise RiotApiError("Riot rechazo la autenticacion de la API.")
         if response.status_code == 403:
@@ -234,7 +240,6 @@ class RiotClient:
             opgg_url=ScrapingClient.build_opgg_profile_url(platform, identity.game_name, identity.tag_line),
             soloq=soloq,
             flex=flex,
-            estimated_mmr=estimate_mmr(soloq, global_winrate or 50.0),
             global_winrate=global_winrate,
             ranked_games=ranked_games,
             ranked_available=True,
@@ -399,27 +404,6 @@ class RiotClient:
             )
 
         current_total_games = player.soloq.total_games if player.soloq is not None else None
-        expected_baseline_total = (
-            max(0, current_total_games - len(matches))
-            if current_total_games is not None and matches
-            else None
-        )
-        has_game_baseline = expected_baseline_total is not None and any(
-            candidate.total_games == expected_baseline_total for candidate in candidates
-        )
-        if matches and not has_game_baseline:
-            try:
-                opgg_page = tracker._load_opgg_profile_page(
-                    platform,
-                    identity.game_name,
-                    identity.tag_line,
-                    force_refresh=force_refresh,
-                )
-            except ScrapingError:
-                opgg_page = None
-            if opgg_page:
-                candidates.extend(tracker._build_today_candidates_from_opgg_page(opgg_page))
-
         first_match_at = None
         for match in matches:
             if not match.played_at_iso:
@@ -507,12 +491,13 @@ class RiotClient:
             participant_puuid = str(item.get("puuid", "") or "")
             if participant_puuid == identity.puuid:
                 tracked_participant = item
-            account = self._account_by_puuid(platform, participant_puuid) if participant_puuid else None
+            riot_id = str(item.get("riotId") or "")
+            visible_name, _, visible_tag = riot_id.partition("#")
             spell_ids = [int(item.get("spell1Id", 0) or 0), int(item.get("spell2Id", 0) or 0)]
             participants.append(
                 LiveGamePlayerDetails(
-                    game_name=str((account or {}).get("gameName") or "Jugador"),
-                    tag_line=str((account or {}).get("tagLine") or ""),
+                    game_name=visible_name or "Jugador",
+                    tag_line=visible_tag,
                     team_color="Azul" if int(item.get("teamId", 0) or 0) == 100 else "Rojo",
                     champion=f"Champion {int(item.get('championId', 0) or 0)}",
                     champion_id=int(item.get("championId", 0) or 0),

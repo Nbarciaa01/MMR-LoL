@@ -75,7 +75,7 @@ class RiotClientTests(unittest.TestCase):
         self.assertIn("entries/by-puuid/player-puuid", self.client.session.get.call_args_list[2].args[0])
         self.assertEqual(summary.ranked_games, 30)
         self.assertEqual(summary.global_winrate, 66.7)
-        self.assertIsNotNone(summary.estimated_mmr)
+        self.assertIsNone(summary.estimated_mmr)
 
     def test_fetches_today_ranked_matches_from_match_v5(self) -> None:
         now = datetime.now().astimezone().replace(hour=16, minute=0, second=0, microsecond=0)
@@ -163,7 +163,7 @@ class RiotClientTests(unittest.TestCase):
             score=current_score - 19,
             rank_text="Platinum III - 79 LP",
             observed_at=played_at - timedelta(minutes=10),
-            source="OP.GG",
+            source="Riot API",
             wins=20,
             losses=10,
         )
@@ -179,7 +179,7 @@ class RiotClientTests(unittest.TestCase):
         self.client.fetch_today_matches = Mock(return_value=[match])
 
         with (
-            patch.object(ScrapingClient, "_load_daily_lp_snapshot_candidates", return_value=[current_candidate]),
+            patch.object(ScrapingClient, "_load_daily_lp_snapshot_candidates", return_value=[current_candidate, historical_candidate]),
             patch.object(ScrapingClient, "_load_opgg_profile_page", return_value="profile") as load_history,
             patch.object(ScrapingClient, "_build_today_candidates_from_opgg_page", return_value=[historical_candidate]),
             patch.object(ScrapingClient, "_append_daily_lp_snapshot"),
@@ -188,7 +188,16 @@ class RiotClientTests(unittest.TestCase):
 
         self.assertEqual(summary.lp_change, 19)
         self.assertEqual(summary.baseline_lp_score, current_score - 19)
-        load_history.assert_called_once()
+        load_history.assert_not_called()
+
+        with (
+            patch.object(ScrapingClient, "_load_daily_lp_snapshot_candidates", return_value=[current_candidate]),
+            patch.object(ScrapingClient, "_load_opgg_profile_page") as load_history,
+            patch.object(ScrapingClient, "_append_daily_lp_snapshot"),
+        ):
+            summary = self.client.fetch_today_summary("Dark Nøwel", "007", "EUW1")
+        self.assertIsNone(summary.lp_change)
+        load_history.assert_not_called()
 
     def test_today_summary_ignores_stale_baseline_when_riot_returns_no_matches(self) -> None:
         soloq = RankedEntry(

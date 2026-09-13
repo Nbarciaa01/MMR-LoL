@@ -1,6 +1,6 @@
-# Solicitud de Production API Key para MMRQ Challenge
+# Registro de proyecto privado para MMRQ Challenge
 
-Texto preparado para **Register Product** en Riot Developer Portal. Antes de enviarlo solo faltan los dos datos marcados como `PENDIENTE` y el texto de verificacion que Riot entregue durante el proceso.
+Texto preparado para **Register Product** como proyecto personal para una comunidad privada pequena. Solicitar una personal key para el grupo MMR; una production key solo si se abre al publico. Completar los datos de contacto pendientes.
 
 ## Nombre del producto
 
@@ -20,7 +20,7 @@ La aplicacion permite al administrador configurar hasta 25 Riot IDs pertenecient
 
 Los cambios diarios de LP se calculan comparando la clasificacion oficial actual con snapshots propios guardados por la aplicacion. MMR es unicamente el nombre del grupo de amigos: MMRQ Challenge no calcula, muestra ni ofrece un MMR alternativo. El ranking del grupo se ordena por tier, division y LP oficiales.
 
-El producto esta destinado al uso privado del grupo MMR. No permite registros, busquedas de cuentas arbitrarias ni la creacion de perfiles por parte del publico. La URL permanece accesible para la revision del producto, pero solo presenta las cuentas preconfiguradas del grupo. Las funciones para anadir, editar o eliminar Riot IDs estan protegidas por un token administrativo que permanece en el servidor.
+El producto esta destinado al uso privado del grupo MMR. No permite registros, busquedas de cuentas arbitrarias ni la creacion de perfiles por parte del publico. El acceso al panel y a sus APIs requiere una credencial privada independiente de la clave de Riot. Durante el prototipo, facilitar el acceso a Riot por el canal privado de revision, sin publicar credenciales en este repositorio. Las funciones para anadir, editar o eliminar Riot IDs estan protegidas por un token administrativo validado en el servidor y distinto de la credencial de consulta.
 
 ## APIs solicitadas
 
@@ -68,9 +68,26 @@ MMRQ Challenge isn't endorsed by Riot Games and doesn't reflect the views or opi
 ## Lista previa al envio
 
 - Completar el nombre legal y el correo publico de contacto.
-- Generar una development key vigente para que Riot pueda probar la aplicacion mientras revisa la solicitud.
+- Usar la development key solo para desarrollar y presentar el prototipo; no para dar servicio al grupo.
 - Iniciar **Register Product** y copiar los textos de este documento.
-- Cuando Riot entregue el texto de verificacion, guardarlo sin cambios en `RIOT_VERIFICATION_TEXT` dentro de Render.
+- Solo si Riot solicita verificacion (normalmente para produccion), cuando entregue el texto, guardarlo sin cambios en `RIOT_VERIFICATION_TEXT` dentro de Render.
 - Desplegar de nuevo y comprobar que `/riot.txt` devuelve exactamente ese texto.
-- Enviar la solicitud de production key.
-- Al aprobarse, sustituir `RIOT_API_KEY` en Render por la production key y desplegar.
+- Enviar la solicitud de personal key para el grupo privado.
+- Al aprobarse, sustituir `RIOT_API_KEY` en Render, configurar `RIOT_KEY_TYPE=personal` y `MMRLOL_ACCESS_MODE=private`, y desplegar.
+
+
+## Integraciones y limitaciones
+
+La web solo obtiene datos de jugadores de los endpoints oficiales de Riot. No recurre a scraping ni a OP.GG para recuperar LP. El catalogo y los iconos provienen de Data Dragon. Builds y perfiles ofrecen enlaces externos a Lolalytics y OP.GG, sin extraer sus datos. Si faltan snapshots anteriores a las partidas, el cambio de LP se muestra como desconocido.
+
+La antigua aplicacion de escritorio del repositorio conserva codigo heredado de scraping y estimacion: no forma parte de la version web presentada para revision y no debe distribuirse como producto aprobado.
+
+## App Note para Riot
+
+MMR es el nombre de nuestro grupo de amigos; MMRQ Challenge no estima matchmaking rating. Es un panel gratuito para seguir nuestros rangos oficiales y partidas SoloQ, sin premios, apuestas ni clasificaciones alternativas. Restauramos nuestro emblema MMR, un escudo azul y dorado. Solicitamos confirmar si su estilo y el acceso limitado al grupo son compatibles con las politicas antes de utilizar el producto fuera del prototipo.
+
+## Referencias
+
+- https://developer.riotgames.com/docs/portal
+- https://developer.riotgames.com/policies/general
+- https://developer.riotgames.com/docs/lol

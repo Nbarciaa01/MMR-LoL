@@ -90,7 +90,8 @@ class WebAppTests(unittest.TestCase):
             estimated_mmr=1800,
         )
 
-        payload = _player_payload(player)
+        with patch("src.lolscout.web_app.profile_icon_url", return_value="https://ddragon.leagueoflegends.com/icon.png"):
+            payload = _player_payload(player)
 
         self.assertNotIn("estimated_mmr", payload)
 

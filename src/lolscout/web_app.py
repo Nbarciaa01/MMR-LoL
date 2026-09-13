@@ -19,11 +19,11 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .app import _load_dotenv
 from .config import AppConfig, VALID_PLATFORMS, load_config, save_config
-from .lolalytics import LolalyticsClient, LolalyticsError
+from .data_dragon import catalog, profile_icon_url
 from .models import PlayerSummary, RankedEntry
 from .persistence import get_store
 from .riot_client import RiotApiError, RiotClient
-from .scraping_client import ScrapingClient, ScrapingError
+from .web_access import access_denial
 
 
 _load_dotenv()
@@ -44,6 +44,9 @@ if allowed_hosts:
 
 @app.middleware("http")
 async def security_headers(request, call_next):
+    denial = access_denial(request)
+    if denial is not None:
+        return denial
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -59,7 +62,9 @@ async def security_headers(request, call_next):
             "/api/today": 45,
             "/api/live": 15,
         }.get(request.url.path)
-        if cache_ttl and request.query_params.get("force_refresh", "false").casefold() != "true":
+        if os.getenv("MMRLOL_ACCESS_MODE", "prototype") != "public":
+            response.headers["Cache-Control"] = "private, no-store"
+        elif cache_ttl and request.query_params.get("force_refresh", "false").casefold() != "true":
             response.headers["Cache-Control"] = (
                 f"public, max-age=0, s-maxage={cache_ttl}, stale-while-revalidate={cache_ttl}"
             )
@@ -153,13 +158,7 @@ def _player_payload(player: PlayerSummary) -> dict:
     payload.pop("estimated_mmr", None)
     payload["soloq"] = _ranked_payload(player.soloq)
     payload["flex"] = _ranked_payload(player.flex)
-    if player.profile_icon_id > 0:
-        payload["profile_icon_url"] = (
-            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/"
-            f"v1/profile-icons/{player.profile_icon_id}.jpg"
-        )
-    else:
-        payload["profile_icon_url"] = None
+    payload["profile_icon_url"] = profile_icon_url(player.profile_icon_id)
     return payload
 
 
@@ -172,7 +171,7 @@ def _cache_key(view: str, platform: str, source: str, players: list[tuple[str, s
     fingerprint = hashlib.sha256(
         json.dumps(players, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
-    return f"{view}:{platform}:{source}:{fingerprint}"
+    return f"riot-only-v2:{view}:{platform}:{source}:{fingerprint}"
 
 
 _TIER_ORDER = {
@@ -276,7 +275,7 @@ def update_config(payload: ConfigInput, _: None = Depends(_require_admin)) -> di
 @app.get("/api/ranking")
 def ranking(
     platform: str = "EUW1",
-    source: Literal["auto", "riot", "scraping"] = "auto",
+    source: Literal["auto", "riot"] = "riot",
     force_refresh: bool = False,
 ) -> dict:
     platform = _platform(platform)
@@ -285,31 +284,17 @@ def ranking(
     cached = _get_cached_response(cache_key, force_refresh)
     if cached is not None:
         return cached
-    riot = _riot_client() if source in {"auto", "riot"} else None
-    if source == "riot" and riot is None:
+    riot = _riot_client()
+    if riot is None:
         raise HTTPException(status_code=503, detail="RIOT_API_KEY no esta configurada en el servidor.")
 
-    scraping = ScrapingClient()
     results: list[dict] = []
     for game_name, tag_line in players:
-        used_source = "riot" if riot is not None else "scraping"
+        used_source = "riot"
         try:
-            if riot is not None:
-                try:
-                    summary = riot.fetch_player_ranking(game_name, tag_line, platform)
-                except RiotApiError:
-                    if source == "riot":
-                        raise
-                    used_source = "scraping"
-                    summary = scraping.fetch_player_ranking(
-                        game_name, tag_line, platform, force_refresh=force_refresh
-                    )
-            else:
-                summary = scraping.fetch_player_ranking(
-                    game_name, tag_line, platform, force_refresh=force_refresh
-                )
+            summary = riot.fetch_player_ranking(game_name, tag_line, platform)
             results.append({"ok": True, "source": used_source, "player": _player_payload(summary)})
-        except (RiotApiError, ScrapingError) as exc:
+        except RiotApiError as exc:
             results.append(
                 {
                     "ok": False,
@@ -328,7 +313,7 @@ def ranking(
 @app.get("/api/today")
 def today(
     platform: str = "EUW1",
-    source: Literal["auto", "riot", "scraping"] = "auto",
+    source: Literal["auto", "riot"] = "riot",
     force_refresh: bool = False,
 ) -> dict:
     platform = _platform(platform)
@@ -337,39 +322,20 @@ def today(
     cached = _get_cached_response(cache_key, force_refresh)
     if cached is not None:
         return cached
-    riot = _riot_client() if source in {"auto", "riot"} else None
-    if source == "riot" and riot is None:
+    riot = _riot_client()
+    if riot is None:
         raise HTTPException(status_code=503, detail="RIOT_API_KEY no esta configurada en el servidor.")
-    scraping = ScrapingClient()
     results: list[dict] = []
     for game_name, tag_line in players:
-        used_source = "riot" if riot is not None else "scraping"
+        used_source = "riot"
         try:
-            if riot is not None:
-                try:
-                    summary = riot.fetch_today_summary(
-                        game_name,
-                        tag_line,
-                        platform,
-                        force_refresh=force_refresh,
-                    )
-                except RiotApiError:
-                    if source == "riot":
-                        raise
-                    used_source = "scraping"
-                    summary = scraping.fetch_player_today_lp(
-                        game_name, tag_line, platform, force_refresh=force_refresh
-                    )
-            else:
-                summary = scraping.fetch_player_today_lp(
-                    game_name, tag_line, platform, force_refresh=force_refresh
-                )
+            summary = riot.fetch_today_summary(game_name, tag_line, platform, force_refresh=force_refresh)
             payload = asdict(summary)
             payload["player"] = _player_payload(summary.player)
             payload["riot_id"] = summary.riot_id
             payload["change_text"] = summary.change_text
             results.append({"ok": True, "source": used_source, "summary": payload})
-        except (RiotApiError, ScrapingError) as exc:
+        except RiotApiError as exc:
             results.append(
                 {"ok": False, "source": used_source, "riot_id": f"{game_name}#{tag_line}", "error": str(exc)}
             )
@@ -381,7 +347,7 @@ def today(
 @app.get("/api/live")
 def live(
     platform: str = "EUW1",
-    source: Literal["auto", "riot", "scraping"] = "auto",
+    source: Literal["auto", "riot"] = "riot",
 ) -> dict:
     platform = _platform(platform)
     players = _players()
@@ -389,26 +355,16 @@ def live(
     cached = _get_cached_response(cache_key, False)
     if cached is not None:
         return cached
-    riot = _riot_client() if source in {"auto", "riot"} else None
-    if source == "riot" and riot is None:
+    riot = _riot_client()
+    if riot is None:
         raise HTTPException(status_code=503, detail="RIOT_API_KEY no esta configurada en el servidor.")
-    scraping = ScrapingClient()
     results = []
     for game_name, tag_line in players:
-        used_source = "riot" if riot is not None else "scraping"
+        used_source = "riot"
         try:
-            if riot is not None:
-                try:
-                    summary = riot.fetch_live_game_summary(game_name, tag_line, platform)
-                except RiotApiError:
-                    if source == "riot":
-                        raise
-                    used_source = "scraping"
-                    summary = scraping.fetch_live_game_summary(game_name, tag_line, platform)
-            else:
-                summary = scraping.fetch_live_game_summary(game_name, tag_line, platform)
+            summary = riot.fetch_live_game_summary(game_name, tag_line, platform)
             results.append({"ok": True, "source": used_source, "summary": asdict(summary)})
-        except (RiotApiError, ScrapingError) as exc:
+        except RiotApiError as exc:
             results.append(
                 {"ok": False, "source": used_source, "riot_id": f"{game_name}#{tag_line}", "error": str(exc)}
             )
@@ -419,22 +375,12 @@ def live(
 
 @app.get("/api/builds/champions")
 def champions(force_refresh: bool = False) -> dict:
-    try:
-        items = LolalyticsClient().fetch_champion_index(force_refresh=force_refresh)
-        return {"champions": [asdict(item) for item in items]}
-    except LolalyticsError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return catalog()
 
 
 @app.get("/api/builds/{slug}")
 def build_detail(slug: str, force_refresh: bool = False) -> dict:
-    safe_slug = slug.strip().casefold()
-    if not safe_slug or not safe_slug.replace("_", "").isalnum():
-        raise HTTPException(status_code=400, detail="Campeon no valido.")
-    try:
-        return asdict(LolalyticsClient().fetch_build_detail(safe_slug, force_refresh=force_refresh))
-    except LolalyticsError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    raise HTTPException(status_code=410, detail="Las builds se consultan mediante enlaces externos.")
 
 
 app.mount("/assets", StaticFiles(directory=ASSET_ROOT), name="assets")

@@ -1,5 +1,9 @@
 # MMRQ Challenge
 
+La web actual usa exclusivamente Riot API y Data Dragon. Builds y OP.GG son enlaces externos; no se extraen datos de esos sitios. El ranking usa rangos oficiales y no calcula MMR. La configuracion del acceso privado y los pendientes de revision estan en [docs/riot-review.md](docs/riot-review.md).
+
+Las secciones sobre PySide6, scraping y el ejecutable describen la version de escritorio heredada, que no forma parte de la web sometida a revision.
+
 Aplicacion privada de escritorio y web para MMR, un grupo de amigos que juega a League of Legends, orientada a seguir sus cuentas desde una sola interfaz.
 
 La app combina varias fuentes externas para mostrar:
@@ -156,7 +160,7 @@ Entre otras cosas se almacenan:
 
 ## Riot API y scraping publico
 
-La version web usa la API oficial de Riot para Ranking, Hoy y En partida cuando `RIOT_API_KEY` esta configurada. Match-V5 obtiene las partidas SoloQ del dia y Spectator-V5 consulta las partidas activas. Si Riot no esta disponible, el modo automatico recurre al sistema anterior.
+La version web requiere la API oficial de Riot para Ranking, Hoy y En partida. Match-V5 obtiene las partidas SoloQ del dia y Spectator-V5 consulta las partidas activas. Si Riot no esta disponible, se muestra un error sin consultar otras fuentes.
 
 Las claves de desarrollo de Riot caducan cada 24 horas. No deben incluirse en JavaScript, commits, capturas ni URLs.
 
