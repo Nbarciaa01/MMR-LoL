@@ -10,7 +10,7 @@ let activeContentRequest = null;
 let contentRequestId = 0;
 
 const viewCopy = {
-  home: ["SoloQ Scout", "El grupo, en una sola vista."],
+  home: ["MMRQ Challenge", "El grupo MMR, en una sola vista."],
   ranking: ["Ranking SoloQ", "Clasificación oficial, LP y rendimiento del grupo."],
   today: ["Lo que ha pasado hoy", "Balance de LP desde las 00:00 y partidas recientes."],
   live: ["En partida", "Estado actual del grupo y composiciones detectadas."],
@@ -74,12 +74,12 @@ function renderHome() {
   const [, champion] = state.homeHero;
   content.innerHTML = `<div class="home-shell">
     <section class="home-intro">
-      <div class="home-intro-brand"><div class="home-logo"><span class="brand-mark" aria-hidden="true">S</span></div><div><p class="eyebrow">Proyecto del grupo</p><h1>SoloQ Scout</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una herramienta comunitaria construida alrededor de nuestros Riot IDs.</p></div></div>
-      <aside><p class="eyebrow">Entre amigos</p><h2>SoloQ, live y builds</h2><p>Seguimiento directo del grupo con datos oficiales de Riot y consultas rápidas para cada partida.</p></aside>
+      <div class="home-intro-brand"><div class="home-logo"><span class="brand-mark" aria-hidden="true">M</span></div><div><p class="eyebrow">Proyecto del grupo MMR</p><h1>MMRQ Challenge</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una aplicación privada creada para nuestro grupo de amigos y construida alrededor de nuestros Riot IDs.</p></div></div>
+      <aside><p class="eyebrow">Entre amigos</p><h2>SoloQ, live y builds</h2><p>Seguimiento directo de las cuentas del grupo MMR con datos oficiales de Riot y consultas rápidas para cada partida.</p></aside>
     </section>
     <section class="home-hero">
       <div class="home-hero-badges"><span>League of Legends</span><span>${escapeHtml(champion)}</span></div>
-      <div class="home-hero-copy"><p class="eyebrow">SoloQ scouting</p><h2>SoloQ<br>Scout</h2><p>El grupo, sus rangos y cada partida de hoy.</p><button class="home-primary" data-target="ranking">Ver jugadores</button></div>
+      <div class="home-hero-copy"><p class="eyebrow">El reto del grupo MMR</p><h2>MMRQ<br>Challenge</h2><p>Nuestros rangos, LP y cada partida de hoy.</p><button class="home-primary" data-target="ranking">Ver jugadores</button></div>
       <nav class="home-actions" aria-label="Accesos directos">
         <button data-target="today"><span class="home-action-number">01</span><strong>Hoy</strong><small>LP del día</small></button>
         <button data-target="ranking"><span class="home-action-number">02</span><strong>Ranking</strong><small>SoloQ</small></button>
@@ -129,7 +129,7 @@ async function putJson(url, body, token) {
 function playerIdentity(player) {
   const icon = player.profile_icon_url
     ? `<img src="${escapeHtml(player.profile_icon_url)}" alt="" loading="lazy">`
-    : `<span class="identity-placeholder" aria-hidden="true">S</span>`;
+    : `<span class="identity-placeholder" aria-hidden="true">M</span>`;
   return `<div class="identity">${icon}<div><strong>${escapeHtml(player.game_name)}</strong><span>#${escapeHtml(player.tag_line)}</span></div></div>`;
 }
 

@@ -32,7 +32,7 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 STATIC_ROOT = WEB_ROOT / "static"
 ASSET_ROOT = Path(__file__).resolve().parent / "ui" / "img"
 
-app = FastAPI(title="SoloQ Scout API", version="0.3.0")
+app = FastAPI(title="MMRQ Challenge API", version="0.3.0")
 
 _response_cache: dict[str, tuple[float, dict]] = {}
 _response_cache_lock = Lock()

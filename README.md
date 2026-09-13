@@ -1,6 +1,6 @@
-# SoloQ Scout
+# MMRQ Challenge
 
-Aplicacion de escritorio y web orientada a seguir un grupo cerrado de jugadores de League of Legends desde una sola interfaz.
+Aplicacion privada de escritorio y web para MMR, un grupo de amigos que juega a League of Legends, orientada a seguir sus cuentas desde una sola interfaz.
 
 La app combina varias fuentes externas para mostrar:
 

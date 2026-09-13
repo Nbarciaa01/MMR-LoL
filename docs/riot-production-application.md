@@ -1,10 +1,10 @@
-# Solicitud de Production API Key para SoloQ Scout
+# Solicitud de Production API Key para MMRQ Challenge
 
 Texto preparado para **Register Product** en Riot Developer Portal. Antes de enviarlo solo faltan los dos datos marcados como `PENDIENTE` y el texto de verificacion que Riot entregue durante el proceso.
 
 ## Nombre del producto
 
-SoloQ Scout
+MMRQ Challenge
 
 ## URL
 
@@ -12,15 +12,15 @@ SoloQ Scout
 
 ## Descripcion corta
 
-SoloQ Scout es una dashboard comunitaria que permite consultar la clasificacion oficial de SoloQ, el cambio diario de LP, las partidas recientes y el estado en partida de un grupo de jugadores de League of Legends.
+MMRQ Challenge es una aplicacion privada creada para MMR, un grupo cerrado de amigos que juega a League of Legends. Reune la clasificacion oficial de SoloQ, el cambio diario de LP, las partidas recientes y el estado en partida de las cuentas del grupo.
 
 ## Descripcion detallada
 
-La aplicacion permite configurar hasta 25 Riot IDs de un grupo. Para cada cuenta muestra su rango y LP oficiales de SoloQ, victorias, derrotas, porcentaje de victorias y partidas clasificatorias. Match-V5 se utiliza para obtener las partidas de SoloQ jugadas desde las 00:00 de la zona horaria configurada y presentar el resultado, campeon y estadisticas basicas. Spectator-V5 se utiliza para indicar si un jugador esta en partida y mostrar la composicion disponible.
+La aplicacion permite al administrador configurar hasta 25 Riot IDs pertenecientes a los amigos del grupo MMR. Para cada cuenta muestra su rango y LP oficiales de SoloQ, victorias, derrotas, porcentaje de victorias y partidas clasificatorias. Match-V5 se utiliza para obtener las partidas de SoloQ jugadas desde las 00:00 de la zona horaria configurada y presentar el resultado, campeon y estadisticas basicas. Spectator-V5 se utiliza para indicar si un jugador esta en partida y mostrar la composicion disponible.
 
-Los cambios diarios de LP se calculan comparando la clasificacion oficial actual con snapshots propios guardados por la aplicacion. SoloQ Scout no calcula, muestra ni ofrece un MMR alternativo. El ranking del grupo se ordena por tier, division y LP oficiales.
+Los cambios diarios de LP se calculan comparando la clasificacion oficial actual con snapshots propios guardados por la aplicacion. MMR es unicamente el nombre del grupo de amigos: MMRQ Challenge no calcula, muestra ni ofrece un MMR alternativo. El ranking del grupo se ordena por tier, division y LP oficiales.
 
-La web es accesible publicamente en modo lectura. Las funciones para anadir, editar o eliminar Riot IDs estan protegidas por un token administrativo que permanece en el servidor.
+El producto esta destinado al uso privado del grupo MMR. No permite registros, busquedas de cuentas arbitrarias ni la creacion de perfiles por parte del publico. La URL permanece accesible para la revision del producto, pero solo presenta las cuentas preconfiguradas del grupo. Las funciones para anadir, editar o eliminar Riot IDs estan protegidas por un token administrativo que permanece en el servidor.
 
 ## APIs solicitadas
 
@@ -63,7 +63,7 @@ El producto no tiene monetizacion, publicidad, compras ni suscripciones.
 
 ## Texto legal de Riot
 
-SoloQ Scout isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+MMRQ Challenge isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
 
 ## Lista previa al envio
 
