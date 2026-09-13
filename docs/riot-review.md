@@ -9,25 +9,16 @@
 - Data Dragon para catalogo e iconos. Builds abre Lolalytics mediante enlaces externos.
 - Spectator utiliza solo nombres visibles en su respuesta, sin resolver identidades ocultas.
 - Token de Riot enviado solo mediante HTTPS a hosts de su API, sin seguir redirecciones.
-- Acceso privado separado de la administracion y sin cache publica de datos privados.
+- Consulta abierta sin registro ni contrasena; edicion protegida por token de administracion.
 - Aviso legal de Riot visible. Sin pagos, premios, apuestas ni etiquetas despectivas.
 
 ## Configuracion antes del despliegue en Render
 
-Configurar estos valores en Environment antes de desplegar:
+El panel y los endpoints de consulta son accesibles sin credenciales para cualquiera con el enlace. Solo la edicion de jugadores requiere MMRLOL_ADMIN_TOKEN.
 
-- MMRLOL_ACCESS_MODE=prototype
-- RIOT_KEY_TYPE=development
-- MMRLOL_VIEWER_USER=mmr
-- MMRLOL_VIEWER_PASSWORD: una contrasena larga y distinta de MMRLOL_ADMIN_TOKEN.
+Las variables MMRLOL_ACCESS_MODE, MMRLOL_VIEWER_USER, MMRLOL_VIEWER_PASSWORD y RIOT_KEY_TYPE ya no se utilizan. Si siguen en Render, no bloquean el acceso y se pueden eliminar. Desplegar el ultimo commit para aplicar el cambio.
 
-El navegador pedira usuario y contrasena. El token de administracion sigue siendo necesario para editar jugadores. Nunca compartir la clave Riot con los visitantes.
-
-Sin contrasena, Render bloquea el panel y los endpoints de datos con 503. Health, paginas legales, recursos estaticos y riot.txt quedan disponibles para operacion y revision. El desarrollo local directo permite acceso sin contrasena.
-
-Con personal key aprobada: RIOT_KEY_TYPE=personal y MMRLOL_ACCESS_MODE=private. Compartir el acceso solo con el grupo.
-
-Para abrir al publico: obtener production key y establecer RIOT_KEY_TYPE=production y MMRLOL_ACCESS_MODE=public. La aplicacion no puede identificar el tipo de clave por su texto; esta declaracion debe coincidir con la clave realmente concedida por Riot.
+La clave de Riot sigue siendo un secreto del servidor. La solicitud del producto debe reflejar que la consulta esta abierta al publico.
 
 ## Pendiente de decisiones externas
 

@@ -74,7 +74,7 @@ function renderHome() {
   const [, champion] = state.homeHero;
   content.innerHTML = `<div class="home-shell">
     <section class="home-intro">
-      <div class="home-intro-brand"><div class="home-logo"><img src="/assets/mmr-logo-app.png" alt=""></div><div><p class="eyebrow">Proyecto del grupo MMR</p><h1>MMRQ Challenge</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una aplicación privada creada para nuestro grupo de amigos y construida alrededor de nuestros Riot IDs.</p></div></div>
+      <div class="home-intro-brand"><div class="home-logo"><img src="/assets/mmr-logo-app.png" alt=""></div><div><p class="eyebrow">Proyecto del grupo MMR</p><h1>MMRQ Challenge</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una aplicación creada para nuestro grupo de amigos y construida alrededor de nuestros Riot IDs.</p></div></div>
       <aside><p class="eyebrow">Entre amigos</p><h2>SoloQ, live y builds</h2><p>Seguimiento directo de las cuentas del grupo MMR con datos oficiales de Riot y consultas rápidas para cada partida.</p></aside>
     </section>
     <section class="home-hero">

@@ -1,10 +1,10 @@
 # MMRQ Challenge
 
-La web actual usa exclusivamente Riot API y Data Dragon. Builds y OP.GG son enlaces externos; no se extraen datos de esos sitios. El ranking usa rangos oficiales y no calcula MMR. La configuracion del acceso privado y los pendientes de revision estan en [docs/riot-review.md](docs/riot-review.md).
+La web actual usa exclusivamente Riot API y Data Dragon. Builds y OP.GG son enlaces externos; no se extraen datos de esos sitios. El ranking usa rangos oficiales y no calcula MMR. La configuracion del acceso y los pendientes de revision estan en [docs/riot-review.md](docs/riot-review.md).
 
 Las secciones sobre PySide6, scraping y el ejecutable describen la version de escritorio heredada, que no forma parte de la web sometida a revision.
 
-Aplicacion privada de escritorio y web para MMR, un grupo de amigos que juega a League of Legends, orientada a seguir sus cuentas desde una sola interfaz.
+Aplicacion del grupo de escritorio y web para MMR, un grupo de amigos que juega a League of Legends, orientada a seguir sus cuentas desde una sola interfaz.
 
 La app combina varias fuentes externas para mostrar:
 

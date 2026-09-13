@@ -23,7 +23,6 @@ from .data_dragon import catalog, profile_icon_url
 from .models import PlayerSummary, RankedEntry
 from .persistence import get_store
 from .riot_client import RiotApiError, RiotClient
-from .web_access import access_denial
 
 
 _load_dotenv()
@@ -44,9 +43,6 @@ if allowed_hosts:
 
 @app.middleware("http")
 async def security_headers(request, call_next):
-    denial = access_denial(request)
-    if denial is not None:
-        return denial
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -62,9 +58,7 @@ async def security_headers(request, call_next):
             "/api/today": 45,
             "/api/live": 15,
         }.get(request.url.path)
-        if os.getenv("MMRLOL_ACCESS_MODE", "prototype") != "public":
-            response.headers["Cache-Control"] = "private, no-store"
-        elif cache_ttl and request.query_params.get("force_refresh", "false").casefold() != "true":
+        if cache_ttl and request.query_params.get("force_refresh", "false").casefold() != "true":
             response.headers["Cache-Control"] = (
                 f"public, max-age=0, s-maxage={cache_ttl}, stale-while-revalidate={cache_ttl}"
             )

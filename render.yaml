@@ -9,14 +9,6 @@ services:
     envVars:
       - key: RIOT_API_KEY
         sync: false
-      - key: RIOT_KEY_TYPE
-        value: development
-      - key: MMRLOL_ACCESS_MODE
-        value: prototype
-      - key: MMRLOL_VIEWER_USER
-        value: mmr
-      - key: MMRLOL_VIEWER_PASSWORD
-        sync: false
       - key: MMRLOL_ADMIN_TOKEN
         sync: false
       - key: RIOT_VERIFICATION_TEXT

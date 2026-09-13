@@ -1,46 +1,40 @@
-import base64
+import asyncio
 import os
 import unittest
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
 from src.lolscout.riot_client import RiotApiError, RiotClient
-from src.lolscout.web_access import access_denial
 from src.lolscout import web_app
 
 
 class WebComplianceTests(unittest.TestCase):
-    def request(self, authorization=""):
-        return SimpleNamespace(
-            url=SimpleNamespace(path="/api/ranking"),
-            client=SimpleNamespace(host="127.0.0.1"),
-            headers={"authorization": authorization},
-        )
+    def test_anonymous_requests_ignore_legacy_viewer_settings(self):
+        from starlette.requests import Request
+        from starlette.responses import Response
 
-    def test_hosted_prototype_fails_closed_without_password(self):
-        with patch.dict(os.environ, {"RENDER": "true", "MMRLOL_VIEWER_PASSWORD": "", "MMRLOL_ACCESS_MODE": "prototype"}):
-            self.assertEqual(access_denial(self.request()).status_code, 503)
+        async def exercise():
+            for path in ("/", "/api/config", "/api/ranking", "/api/today", "/api/live"):
+                request = Request({"type": "http", "method": "GET", "path": path,
+                                   "headers": [], "query_string": b""})
+                async def next_handler(request):
+                    return Response("ok")
+                response = await web_app.security_headers(request, next_handler)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("www-authenticate", response.headers)
 
-    def test_private_password_and_admin_token_are_separate_credentials(self):
         with patch.dict(os.environ, {
             "RENDER": "true", "MMRLOL_ACCESS_MODE": "private",
-            "MMRLOL_VIEWER_USER": "mmr", "MMRLOL_VIEWER_PASSWORD": "viewer",
-            "MMRLOL_ADMIN_TOKEN": "admin",
+            "MMRLOL_VIEWER_PASSWORD": "old-password", "RIOT_KEY_TYPE": "development",
         }):
-            self.assertEqual(access_denial(self.request()).status_code, 401)
-            basic = base64.b64encode(b"mmr:viewer").decode()
-            self.assertIsNone(access_denial(self.request("Basic " + basic)))
-            self.assertIsNone(access_denial(self.request("Bearer admin")))
-            with self.assertRaises(HTTPException):
-                web_app._require_admin("Bearer viewer")
+            asyncio.run(exercise())
 
-    def test_public_access_requires_production_declaration(self):
-        with patch.dict(os.environ, {"MMRLOL_ACCESS_MODE": "public", "RIOT_KEY_TYPE": "development"}):
-            self.assertEqual(access_denial(self.request()).status_code, 503)
-        with patch.dict(os.environ, {"MMRLOL_ACCESS_MODE": "public", "RIOT_KEY_TYPE": "production"}):
-            self.assertIsNone(access_denial(self.request()))
+    def test_anonymous_edits_still_require_admin_token(self):
+        with patch.dict(os.environ, {"MMRLOL_ADMIN_TOKEN": "admin"}):
+            with self.assertRaises(HTTPException) as error:
+                web_app._require_admin(None)
+            self.assertEqual(error.exception.status_code, 401)
 
     def test_riot_failure_does_not_fetch_other_sources(self):
         client = Mock()

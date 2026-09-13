@@ -1,6 +1,6 @@
-# Registro de proyecto privado para MMRQ Challenge
+# Registro de proyecto para MMRQ Challenge
 
-Texto preparado para **Register Product** como proyecto personal para una comunidad privada pequena. Solicitar una personal key para el grupo MMR; una production key solo si se abre al publico. Completar los datos de contacto pendientes.
+Texto preparado para **Register Product**: panel del grupo MMR con consulta publica mediante enlace y sin registro. Solicitar la clave adecuada para acceso publico y completar los datos de contacto pendientes.
 
 ## Nombre del producto
 
@@ -12,7 +12,7 @@ MMRQ Challenge
 
 ## Descripcion corta
 
-MMRQ Challenge es una aplicacion privada creada para MMR, un grupo cerrado de amigos que juega a League of Legends. Reune la clasificacion oficial de SoloQ, el cambio diario de LP, las partidas recientes y el estado en partida de las cuentas del grupo.
+MMRQ Challenge es una aplicacion del grupo creada para MMR, un grupo cerrado de amigos que juega a League of Legends. Reune la clasificacion oficial de SoloQ, el cambio diario de LP, las partidas recientes y el estado en partida de las cuentas del grupo.
 
 ## Descripcion detallada
 
@@ -20,7 +20,7 @@ La aplicacion permite al administrador configurar hasta 25 Riot IDs pertenecient
 
 Los cambios diarios de LP se calculan comparando la clasificacion oficial actual con snapshots propios guardados por la aplicacion. MMR es unicamente el nombre del grupo de amigos: MMRQ Challenge no calcula, muestra ni ofrece un MMR alternativo. El ranking del grupo se ordena por tier, division y LP oficiales.
 
-El producto esta destinado al uso privado del grupo MMR. No permite registros, busquedas de cuentas arbitrarias ni la creacion de perfiles por parte del publico. El acceso al panel y a sus APIs requiere una credencial privada independiente de la clave de Riot. Durante el prototipo, facilitar el acceso a Riot por el canal privado de revision, sin publicar credenciales en este repositorio. Las funciones para anadir, editar o eliminar Riot IDs estan protegidas por un token administrativo validado en el servidor y distinto de la credencial de consulta.
+El producto muestra las cuentas del grupo MMR y permite su consulta a cualquiera con el enlace, sin registro ni contrasena. No ofrece busquedas de cuentas arbitrarias ni creacion publica de perfiles. Anadir, editar o eliminar jugadores requiere un token administrativo validado en el servidor.
 
 ## APIs solicitadas
 
@@ -72,8 +72,8 @@ MMRQ Challenge isn't endorsed by Riot Games and doesn't reflect the views or opi
 - Iniciar **Register Product** y copiar los textos de este documento.
 - Solo si Riot solicita verificacion (normalmente para produccion), cuando entregue el texto, guardarlo sin cambios en `RIOT_VERIFICATION_TEXT` dentro de Render.
 - Desplegar de nuevo y comprobar que `/riot.txt` devuelve exactamente ese texto.
-- Enviar la solicitud de personal key para el grupo privado.
-- Al aprobarse, sustituir `RIOT_API_KEY` en Render, configurar `RIOT_KEY_TYPE=personal` y `MMRLOL_ACCESS_MODE=private`, y desplegar.
+- Enviar la solicitud de production key para la consulta publica.
+- Al aprobarse, sustituir `RIOT_API_KEY` en Render por la clave concedida y desplegar.
 
 
 ## Integraciones y limitaciones
@@ -84,7 +84,7 @@ La antigua aplicacion de escritorio del repositorio conserva codigo heredado de 
 
 ## App Note para Riot
 
-MMR es el nombre de nuestro grupo de amigos; MMRQ Challenge no estima matchmaking rating. Es un panel gratuito para seguir nuestros rangos oficiales y partidas SoloQ, sin premios, apuestas ni clasificaciones alternativas. Restauramos nuestro emblema MMR, un escudo azul y dorado. Solicitamos confirmar si su estilo y el acceso limitado al grupo son compatibles con las politicas antes de utilizar el producto fuera del prototipo.
+MMR es el nombre de nuestro grupo de amigos; MMRQ Challenge no estima matchmaking rating. Es un panel gratuito para seguir nuestros rangos oficiales y partidas SoloQ, sin premios, apuestas ni clasificaciones alternativas. Restauramos nuestro emblema MMR, un escudo azul y dorado. Solicitamos confirmar si su estilo y el panel de consulta publica de las cuentas del grupo son compatibles con las politicas antes de utilizar el producto fuera del prototipo.
 
 ## Referencias
 
