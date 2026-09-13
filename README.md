@@ -1,11 +1,11 @@
-# MMR LoL
+# SoloQ Scout
 
 Aplicacion de escritorio y web orientada a seguir un grupo cerrado de jugadores de League of Legends desde una sola interfaz.
 
 La app combina varias fuentes externas para mostrar:
 
 - balance diario de LP en SoloQ
-- ranking del grupo por elo y MMR estimado
+- ranking del grupo por rango, division y LP oficiales
 - builds y matchups desde Lolalytics
 - partidas activas en vivo
 - galeria visual de jugadores
@@ -34,7 +34,7 @@ La pestana **Ranking** construye una clasificacion del grupo con informacion com
 
 - elo/rango de SoloQ
 - LP actuales
-- MMR estimado
+- porcentaje de victorias
 - numero de partidas
 - campeones mas jugados
 - roles mas frecuentes
@@ -279,7 +279,7 @@ scripts/
 1. Abre la app.
 2. Configura jugadores y plataforma.
 3. Actualiza **Hoy** para calcular el balance diario.
-4. Actualiza **Ranking** para refrescar elo, LP y MMR.
+4. Actualiza **Ranking** para refrescar rango, division y LP.
 5. Consulta **Builds** y **En partida** segun necesites.
 
 ## Objetivo del proyecto

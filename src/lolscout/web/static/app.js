@@ -10,8 +10,8 @@ let activeContentRequest = null;
 let contentRequestId = 0;
 
 const viewCopy = {
-  home: ["MMR LoL Scout", "El grupo, en una sola vista."],
-  ranking: ["Ranking SoloQ", "Comparativa de rango, LP y MMR estimado."],
+  home: ["SoloQ Scout", "El grupo, en una sola vista."],
+  ranking: ["Ranking SoloQ", "Clasificación oficial, LP y rendimiento del grupo."],
   today: ["Lo que ha pasado hoy", "Balance de LP desde las 00:00 y partidas recientes."],
   live: ["En partida", "Estado actual del grupo y composiciones detectadas."],
   builds: ["Builds por campeón", "Runas, objetos, habilidades y matchups en una consulta rápida."],
@@ -74,12 +74,12 @@ function renderHome() {
   const [, champion] = state.homeHero;
   content.innerHTML = `<div class="home-shell">
     <section class="home-intro">
-      <div class="home-intro-brand"><div class="home-logo"><img src="/assets/mmr-logo-app.png" alt=""></div><div><p class="eyebrow">Proyecto del grupo</p><h1>MMR LoL Scout</h1><strong>Elo, LP diarios y partidas activas en una sola vista.</strong><p>Una herramienta privada construida alrededor de nuestros Riot IDs.</p></div></div>
+      <div class="home-intro-brand"><div class="home-logo"><span class="brand-mark" aria-hidden="true">S</span></div><div><p class="eyebrow">Proyecto del grupo</p><h1>SoloQ Scout</h1><strong>Rangos, LP diarios y partidas activas en una sola vista.</strong><p>Una herramienta comunitaria construida alrededor de nuestros Riot IDs.</p></div></div>
       <aside><p class="eyebrow">Entre amigos</p><h2>SoloQ, live y builds</h2><p>Seguimiento directo del grupo con datos oficiales de Riot y consultas rápidas para cada partida.</p></aside>
     </section>
     <section class="home-hero">
       <div class="home-hero-badges"><span>League of Legends</span><span>${escapeHtml(champion)}</span></div>
-      <div class="home-hero-copy"><p class="eyebrow">SoloQ scouting</p><h2>MMR<br>LoL Scout</h2><p>El grupo, sus rangos y cada partida de hoy.</p><button class="home-primary" data-target="ranking">Ver jugadores</button></div>
+      <div class="home-hero-copy"><p class="eyebrow">SoloQ scouting</p><h2>SoloQ<br>Scout</h2><p>El grupo, sus rangos y cada partida de hoy.</p><button class="home-primary" data-target="ranking">Ver jugadores</button></div>
       <nav class="home-actions" aria-label="Accesos directos">
         <button data-target="today"><span class="home-action-number">01</span><strong>Hoy</strong><small>LP del día</small></button>
         <button data-target="ranking"><span class="home-action-number">02</span><strong>Ranking</strong><small>SoloQ</small></button>
@@ -127,8 +127,10 @@ async function putJson(url, body, token) {
 }
 
 function playerIdentity(player) {
-  const icon = player.profile_icon_url || "/assets/mmr-logo-app.png";
-  return `<div class="identity"><img src="${escapeHtml(icon)}" alt="" loading="lazy"><div><strong>${escapeHtml(player.game_name)}</strong><span>#${escapeHtml(player.tag_line)}</span></div></div>`;
+  const icon = player.profile_icon_url
+    ? `<img src="${escapeHtml(player.profile_icon_url)}" alt="" loading="lazy">`
+    : `<span class="identity-placeholder" aria-hidden="true">S</span>`;
+  return `<div class="identity">${icon}<div><strong>${escapeHtml(player.game_name)}</strong><span>#${escapeHtml(player.tag_line)}</span></div></div>`;
 }
 
 function championIconUrl(championId) {
@@ -143,7 +145,6 @@ function renderRanking(data) {
     if (!result.ok) return `<div class="error-row">${escapeHtml(result.riot_id)} · ${escapeHtml(result.error)}</div>`;
     const p = result.player;
     const rank = p.soloq?.display_rank || "Sin clasificar";
-    const mmr = p.estimated_mmr == null ? "—" : p.estimated_mmr.toLocaleString("es-ES");
     const winrate = p.global_winrate == null ? "—" : `${p.global_winrate}%`;
     const games = p.ranked_games == null ? "—" : p.ranked_games;
     const opggLink = p.opgg_url
@@ -153,13 +154,12 @@ function renderRanking(data) {
       <div class="position">${index + 1}</div>
       ${playerIdentity(p)}
       <div class="rank">${escapeHtml(rank)}</div>
-      <div class="metric mmr"><strong>${mmr}</strong><span>MMR</span></div>
       <div class="metric winrate"><strong>${winrate}</strong><span>Winrate</span></div>
       <div class="metric games"><strong>${games}</strong><span>Partidas</span></div>
       ${opggLink}
     </article>`;
   }).join("");
-  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>MMR</span><span>WR</span><span>Partidas</span><span class="sr-only">OP.GG</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
+  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>WR</span><span>Partidas</span><span class="sr-only">OP.GG</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
 }
 
 function renderToday(data) {

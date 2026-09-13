@@ -1,34 +1,34 @@
-# Solicitud de Production API Key para MMR LoL
+# Solicitud de Production API Key para SoloQ Scout
 
-Este documento es un borrador para completar **Register Product** en el Riot Developer Portal. Sustituye los campos entre corchetes antes de enviarlo.
+Texto preparado para **Register Product** en Riot Developer Portal. Antes de enviarlo solo faltan los dos datos marcados como `PENDIENTE` y el texto de verificacion que Riot entregue durante el proceso.
 
 ## Nombre del producto
 
-MMR LoL
+SoloQ Scout
 
 ## URL
 
-`https://[dominio-publico]`
+`https://mmrlol-web.onrender.com/`
 
 ## Descripcion corta
 
-MMR LoL es una dashboard comunitaria para consultar en un solo lugar la clasificacion, el cambio diario de LP, las partidas activas y builds de un grupo de jugadores de League of Legends.
+SoloQ Scout es una dashboard comunitaria que permite consultar la clasificacion oficial de SoloQ, el cambio diario de LP, las partidas recientes y el estado en partida de un grupo de jugadores de League of Legends.
 
 ## Descripcion detallada
 
-La aplicacion permite configurar hasta 25 Riot IDs de un grupo. Para cada cuenta muestra el rango de SoloQ, LP, victorias, derrotas y una estimacion visual de MMR. Match-V5 se utiliza para obtener las partidas de SoloQ jugadas desde las 00:00 locales y mostrar resultados y estadisticas basicas. Spectator-V5 se utiliza para indicar si un jugador esta en partida y mostrar la composicion disponible.
+La aplicacion permite configurar hasta 25 Riot IDs de un grupo. Para cada cuenta muestra su rango y LP oficiales de SoloQ, victorias, derrotas, porcentaje de victorias y partidas clasificatorias. Match-V5 se utiliza para obtener las partidas de SoloQ jugadas desde las 00:00 de la zona horaria configurada y presentar el resultado, campeon y estadisticas basicas. Spectator-V5 se utiliza para indicar si un jugador esta en partida y mostrar la composicion disponible.
 
-Los cambios de LP se calculan comparando la clasificacion actual con snapshots propios guardados por la aplicacion. La estimacion de MMR no es un dato oficial de Riot y se identifica como estimacion en la interfaz.
+Los cambios diarios de LP se calculan comparando la clasificacion oficial actual con snapshots propios guardados por la aplicacion. SoloQ Scout no calcula, muestra ni ofrece un MMR alternativo. El ranking del grupo se ordena por tier, division y LP oficiales.
 
-La aplicacion esta pensada inicialmente para una comunidad pequena de amigos, pero la web sera accesible publicamente. Las funciones de edicion estan protegidas por un token de administracion. Los visitantes solo pueden consultar los datos configurados.
+La web es accesible publicamente en modo lectura. Las funciones para anadir, editar o eliminar Riot IDs estan protegidas por un token administrativo que permanece en el servidor.
 
 ## APIs solicitadas
 
 - ACCOUNT-V1: resolver Riot ID y PUUID.
-- SUMMONER-V4: nivel, icono y summoner ID.
-- LEAGUE-V4: clasificacion SoloQ y Flex.
-- MATCH-V5: historial y detalle de partidas SoloQ del dia.
-- SPECTATOR-V5: estado y participantes de partidas activas.
+- SUMMONER-V4: obtener nivel, icono y summoner ID.
+- LEAGUE-V4: obtener clasificacion oficial SoloQ y Flex.
+- MATCH-V5: consultar historial y detalle de partidas SoloQ del dia.
+- SPECTATOR-V5: consultar estado y participantes de partidas activas.
 
 ## Seguridad y limites
 
@@ -39,32 +39,38 @@ La aplicacion esta pensada inicialmente para una comunidad pequena de amigos, pe
 - Los detalles de partidas terminadas se cachean durante 24 horas.
 - Spectator-V5 se cachea durante 20 segundos.
 - El resumen de Hoy se cachea durante 45 segundos y En partida durante 15 segundos.
-- Los snapshots diarios se guardan en PostgreSQL y usan explicitamente la zona `Europe/Madrid`.
-- Los errores 429 se respetan usando `Retry-After` y se muestran sin reintentos agresivos desde el navegador.
+- Los snapshots diarios se guardan en PostgreSQL y usan la zona `Europe/Madrid`.
+- Los errores 429 respetan `Retry-After`; el navegador no realiza reintentos agresivos.
 - La gestion de jugadores requiere un secreto administrativo independiente.
 
 ## Enlaces requeridos
 
-- Producto: `https://[dominio-publico]/`
-- Privacidad: `https://[dominio-publico]/privacy`
-- Terminos: `https://[dominio-publico]/terms`
-- Verificacion: `https://[dominio-publico]/riot.txt`
-- Repositorio: `[URL del repositorio, si sera publico]`
+- Producto: `https://mmrlol-web.onrender.com/`
+- Privacidad: `https://mmrlol-web.onrender.com/privacy`
+- Terminos: `https://mmrlol-web.onrender.com/terms`
+- Verificacion: `https://mmrlol-web.onrender.com/riot.txt`
+- Repositorio: `https://github.com/Nbarciaa01/MMR-LoL`
 
 ## Monetizacion
 
-El prototipo no tiene monetizacion, publicidad, compras ni suscripciones.
+El producto no tiene monetizacion, publicidad, compras ni suscripciones.
 
 ## Contacto
 
-- Responsable: `[nombre completo]`
-- Correo: `[correo de contacto]`
+- Responsable: `PENDIENTE: nombre legal del responsable`
+- Correo publico: `PENDIENTE: correo de contacto`
 - Pais: Espana
 
-## Revision previa al envio
+## Texto legal de Riot
 
-- La production key no debe solicitarse hasta que la URL publica funcione.
-- `riot.txt` debe mostrar exactamente el texto de verificacion entregado por Riot.
-- El dominio debe servir HTTPS.
-- La politica de privacidad debe incluir un medio de contacto real.
-- Deben eliminarse o completarse todos los campos entre corchetes.
+SoloQ Scout isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+
+## Lista previa al envio
+
+- Completar el nombre legal y el correo publico de contacto.
+- Generar una development key vigente para que Riot pueda probar la aplicacion mientras revisa la solicitud.
+- Iniciar **Register Product** y copiar los textos de este documento.
+- Cuando Riot entregue el texto de verificacion, guardarlo sin cambios en `RIOT_VERIFICATION_TEXT` dentro de Render.
+- Desplegar de nuevo y comprobar que `/riot.txt` devuelve exactamente ese texto.
+- Enviar la solicitud de production key.
+- Al aprobarse, sustituir `RIOT_API_KEY` en Render por la production key y desplegar.

@@ -9,12 +9,15 @@ from fastapi import HTTPException
 
 from src.lolscout.web_app import (
     ConfigInput,
+    _player_payload,
     _require_admin,
     _soloq_sort_key,
     privacy,
+    riot_verification,
     terms,
     update_config,
 )
+from src.lolscout.models import PlayerSummary
 
 
 class WebAppTests(unittest.TestCase):
@@ -76,6 +79,24 @@ class WebAppTests(unittest.TestCase):
             [item["player"]["game_name"] for item in players],
             ["EmeraldHigh", "Emerald", "Platinum"],
         )
+
+    def test_public_player_payload_does_not_expose_estimated_mmr(self) -> None:
+        player = PlayerSummary(
+            game_name="Player",
+            tag_line="EUW",
+            summoner_level=100,
+            profile_icon_id=1,
+            platform="EUW1",
+            estimated_mmr=1800,
+        )
+
+        payload = _player_payload(player)
+
+        self.assertNotIn("estimated_mmr", payload)
+
+    def test_riot_verification_returns_configured_text_exactly(self) -> None:
+        with patch.dict(os.environ, {"RIOT_VERIFICATION_TEXT": "verification-code"}, clear=False):
+            self.assertEqual(riot_verification(), "verification-code")
 
 
 if __name__ == "__main__":

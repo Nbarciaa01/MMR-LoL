@@ -32,7 +32,7 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 STATIC_ROOT = WEB_ROOT / "static"
 ASSET_ROOT = Path(__file__).resolve().parent / "ui" / "img"
 
-app = FastAPI(title="MMR LoL Web", version="0.2.0")
+app = FastAPI(title="SoloQ Scout API", version="0.3.0")
 
 _response_cache: dict[str, tuple[float, dict]] = {}
 _response_cache_lock = Lock()
@@ -149,6 +149,8 @@ def _ranked_payload(entry: RankedEntry | None) -> dict | None:
 
 def _player_payload(player: PlayerSummary) -> dict:
     payload = asdict(player)
+    # Riot does not allow public alternatives to its official ranking system.
+    payload.pop("estimated_mmr", None)
     payload["soloq"] = _ranked_payload(player.soloq)
     payload["flex"] = _ranked_payload(player.flex)
     if player.profile_icon_id > 0:
