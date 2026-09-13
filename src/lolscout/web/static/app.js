@@ -178,24 +178,43 @@ function renderRowActivity(row, activity) {
   value.setAttribute("aria-busy", "false");
 }
 
-async function loadRankingActivity(data, request) {
-  // Load one player at a time to avoid bursts against Riot's rate limits.
-  for (const [index, result] of data.players.entries()) {
-    if (!isCurrentContentRequest(request)) return;
-    if (!result.ok) continue;
-    const row = content.querySelector(`[data-player-index="${index}"]`);
-    const params = new URLSearchParams({
-      platform: state.platform, game_name: result.player.game_name, tag_line: result.player.tag_line,
-    });
-    try {
-      const activity = await getJson(`/api/ranking/activity?${params}`, { signal: request.controller.signal });
+async function loadRankingActivity(data, request, force = false) {
+  const pending = data.players.entries();
+  const platform = state.platform;
+  // Two workers keep a slow account from blocking every following row.
+  async function worker() {
+    for (const [index, result] of pending) {
       if (!isCurrentContentRequest(request)) return;
-      renderRowActivity(row, activity);
-    } catch (error) {
-      if (!isCurrentContentRequest(request) || error.name === "AbortError") return;
-      renderRowActivity(row, { recent_matches: null, lp_change: null, matches_error: error.message, today_error: error.message });
+      if (!result.ok) continue;
+      const row = content.querySelector(`[data-player-index="${index}"]`);
+      const params = new URLSearchParams({
+        platform, game_name: result.player.game_name, tag_line: result.player.tag_line,
+      });
+      const day = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Madrid" });
+      const cacheKey = `ranking-activity-v1:${day}:${params}`;
+      try {
+        try {
+          const cached = JSON.parse(sessionStorage.getItem(cacheKey));
+          if (!force && cached && cached.expires > Date.now()) {
+            renderRowActivity(row, cached.activity);
+            continue;
+          }
+        } catch { /* Storage may be disabled. */ }
+        const activity = await getJson(`/api/ranking/activity?${params}`, { signal: request.controller.signal });
+        if (!isCurrentContentRequest(request)) return;
+        renderRowActivity(row, activity);
+        if (!activity.matches_error && !activity.today_error) {
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({ activity, expires: Date.now() + 45000 }));
+          } catch { /* Caching is optional. */ }
+        }
+      } catch (error) {
+        if (!isCurrentContentRequest(request) || error.name === "AbortError") return;
+        renderRowActivity(row, { recent_matches: null, lp_change: null, matches_error: error.message, today_error: error.message });
+      }
     }
   }
+  await Promise.all([worker(), worker()]);
 }
 
 function renderLive(data) {
@@ -246,7 +265,7 @@ async function loadView(force = false) {
     if (!isCurrentContentRequest(request)) return;
     if (view === "ranking") {
       renderRanking(data);
-      await loadRankingActivity(data, request);
+      await loadRankingActivity(data, request, force);
     }
     if (view === "live") renderLive(data);
     if (view === "builds") {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from .models import (
     TodayLpSummary,
 )
 from .scraping_client import ScrapingClient
+from .persistence import get_store
 from .time_utils import app_now, to_app_timezone
 
 
@@ -83,6 +85,7 @@ class RiotIdentity:
 class RiotClient:
     api_key: str
     timeout: int = 12
+    persistent_match_cache: bool = False
     session: requests.Session = field(init=False, repr=False)
     _cache: dict[str, tuple[float, object]] = field(init=False, repr=False, default_factory=dict)
     _cache_lock: Lock = field(init=False, repr=False, default_factory=Lock)
@@ -128,6 +131,23 @@ class RiotClient:
             if cached and cached[0] > now:
                 return copy.deepcopy(cached[1])
 
+        store = None
+        cache_key = f"riot-match-v1:{url}"
+        match_path = target.path.removeprefix("/lol/match/v5/matches/")
+        if (self.persistent_match_cache and ttl_seconds > 0
+                and target.path.startswith("/lol/match/v5/matches/")
+                and match_path and "/" not in match_path and not target.query):
+            try:
+                store = get_store()
+                cached_payload = store.get_cached_response(cache_key) if store else None
+                if cached_payload is not None:
+                    with self._cache_lock:
+                        self._cache[url] = (now + ttl_seconds, copy.deepcopy(cached_payload))
+                    return cached_payload
+            except Exception:
+                logging.getLogger(__name__).warning("Persistent match cache unavailable")
+                store = None
+
         try:
             response = self.session.get(
                 url,
@@ -159,6 +179,11 @@ class RiotClient:
         if ttl_seconds > 0:
             with self._cache_lock:
                 self._cache[url] = (now + ttl_seconds, copy.deepcopy(payload))
+        if store is not None and isinstance(payload, dict):
+            try:
+                store.set_cached_response(cache_key, payload, ttl_seconds)
+            except Exception:
+                logging.getLogger(__name__).warning("Could not persist match cache")
         return payload
 
     def _account_by_puuid(self, platform: str, puuid: str) -> dict | None:
@@ -374,6 +399,20 @@ class RiotClient:
         matches.sort(key=lambda match: match.played_at_iso or "", reverse=True)
         return matches
 
+    def _today_from_recent(self, recent_matches: list[MatchSummary] | None) -> list[MatchSummary] | None:
+        if recent_matches is None:
+            return None
+        start = app_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            dates = [to_app_timezone(datetime.fromisoformat(match.played_at_iso))
+                     for match in recent_matches]
+        except (ValueError, TypeError):
+            return None
+        # Five games today may hide further games; fetch the full daily list then.
+        if len(recent_matches) >= 5 and all(date >= start for date in dates):
+            return None
+        return [match for match, date in zip(recent_matches, dates) if date >= start]
+
     def fetch_today_summary(
         self,
         game_name: str,
@@ -381,11 +420,14 @@ class RiotClient:
         platform: str,
         *,
         force_refresh: bool = False,
+        recent_matches: list[MatchSummary] | None = None,
     ) -> TodayLpSummary:
         platform = platform.strip().upper()
         identity = self.resolve_identity(platform, game_name, tag_line)
         player = self._ranking_from_identity(platform, identity)
-        matches = self.fetch_today_matches(platform, identity.puuid)
+        matches = self._today_from_recent(recent_matches)
+        if matches is None:
+            matches = self.fetch_today_matches(platform, identity.puuid)
         rank_text = player.soloq.display_rank if player.soloq else "Sin SoloQ"
         tracker = ScrapingClient()
         current_score = tracker._lp_score_from_ranked_entry(player.soloq)

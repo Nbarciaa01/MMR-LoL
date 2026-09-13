@@ -113,7 +113,7 @@ def _riot_client() -> RiotClient | None:
     if not api_key:
         return None
     if _riot_instance is None or _riot_instance[0] != api_key:
-        _riot_instance = (api_key, RiotClient(api_key))
+        _riot_instance = (api_key, RiotClient(api_key, persistent_match_cache=True))
     return _riot_instance[1]
 
 
@@ -322,19 +322,20 @@ def ranking_activity(game_name: str, tag_line: str, platform: str = "EUW1") -> d
     if riot is None:
         raise HTTPException(status_code=503, detail="Riot API no configurada.")
     payload = {"recent_matches": None, "lp_change": None, "matches_error": None, "today_error": None}
+    recent_matches = None
     try:
         identity = riot.resolve_identity(platform, game_name, tag_line)
-        payload["recent_matches"] = [asdict(match) for match in
-                                     riot.fetch_recent_matches(platform, identity.puuid)]
+        recent_matches = riot.fetch_recent_matches(platform, identity.puuid)
+        payload["recent_matches"] = [asdict(match) for match in recent_matches]
     except RiotApiError as exc:
         payload["matches_error"] = str(exc)
     try:
-        summary = riot.fetch_today_summary(game_name, tag_line, platform)
+        summary = riot.fetch_today_summary(game_name, tag_line, platform, recent_matches=recent_matches)
         payload["lp_change"] = summary.lp_change
         payload["today_note"] = summary.baseline_note
     except RiotApiError as exc:
         payload["today_error"] = str(exc)
-    _set_cached_response(key, payload, 90)
+    _set_cached_response(key, payload, 10 if payload["matches_error"] or payload["today_error"] else 90)
     return payload
 
 
