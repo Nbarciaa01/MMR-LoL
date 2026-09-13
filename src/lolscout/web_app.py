@@ -308,9 +308,10 @@ def ranking(
 @app.get("/api/ranking/activity")
 def ranking_activity(game_name: str, tag_line: str, platform: str = "EUW1") -> dict:
     platform = _platform(platform)
+    game_name, tag_line = game_name.strip(), tag_line.strip()
     players = _players()
     if (game_name.casefold(), tag_line.casefold()) not in {
-        (name.casefold(), tag.casefold()) for name, tag in players
+        (name.strip().casefold(), tag.strip().casefold()) for name, tag in players
     }:
         raise HTTPException(status_code=404, detail="Jugador no configurado.")
     key = _cache_key(f"activity:{app_now().date().isoformat()}", platform, "riot",

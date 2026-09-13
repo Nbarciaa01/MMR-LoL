@@ -8,6 +8,16 @@ from src.lolscout.riot_client import RiotApiError
 
 
 class RankingActivityTests(unittest.TestCase):
+    def test_trailing_spaces_from_riot_are_normalised(self):
+        payload = {"recent_matches": [], "lp_change": 0}
+        with (
+            patch.object(web_app, "_players", return_value=[("EL TeT1T4S", "EUW ")]),
+            patch.object(web_app, "_get_cached_response", return_value=payload),
+            patch.object(web_app, "_riot_client") as client,
+        ):
+            self.assertEqual(web_app.ranking_activity("EL TeT1T4S ", " EUW"), payload)
+            client.assert_not_called()
+
     def test_unconfigured_player_is_rejected_without_riot_request(self):
         with patch.object(web_app, "_players", return_value=[]), patch.object(web_app, "_riot_client") as client:
             with self.assertRaises(HTTPException) as error:
