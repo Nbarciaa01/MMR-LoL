@@ -308,6 +308,24 @@ class RiotClient:
             played_at_text=self._relative_time(played_at, now_local),
         )
 
+    def fetch_recent_matches(self, platform: str, puuid: str) -> list[MatchSummary]:
+        regional = self.regional_route(platform)
+        query = urlencode({"queue": 420, "start": 0, "count": 5})
+        root = f"https://{regional}.api.riotgames.com/lol/match/v5/matches"
+        ids = self._get_json(f"{root}/by-puuid/{quote(puuid, safe='')}/ids?{query}", ttl_seconds=90)
+        if not isinstance(ids, list):
+            raise RiotApiError("Riot no devolvio un historial de partidas valido.")
+        matches = []
+        now = app_now()
+        for match_id in ids[:5]:
+            detail = self._get_json(f"{root}/{quote(str(match_id), safe='')}", ttl_seconds=86400)
+            if isinstance(detail, dict):
+                match = self._match_summary(detail, puuid, now)
+                if match is not None:
+                    matches.append(match)
+        matches.sort(key=lambda match: match.played_at_iso or "", reverse=True)
+        return matches
+
     def fetch_today_matches(
         self,
         platform: str,

@@ -23,6 +23,7 @@ from .data_dragon import catalog, profile_icon_url
 from .models import PlayerSummary, RankedEntry
 from .persistence import get_store
 from .riot_client import RiotApiError, RiotClient
+from .time_utils import app_now
 
 
 _load_dotenv()
@@ -301,6 +302,39 @@ def ranking(
     results.sort(key=_soloq_sort_key, reverse=True)
     payload = {"platform": platform, "players": results}
     _set_cached_response(cache_key, payload, 90)
+    return payload
+
+
+@app.get("/api/ranking/activity")
+def ranking_activity(game_name: str, tag_line: str, platform: str = "EUW1") -> dict:
+    platform = _platform(platform)
+    players = _players()
+    if (game_name.casefold(), tag_line.casefold()) not in {
+        (name.casefold(), tag.casefold()) for name, tag in players
+    }:
+        raise HTTPException(status_code=404, detail="Jugador no configurado.")
+    key = _cache_key(f"activity:{app_now().date().isoformat()}", platform, "riot",
+                     [(game_name, tag_line)])
+    cached = _get_cached_response(key, False)
+    if cached is not None:
+        return cached
+    riot = _riot_client()
+    if riot is None:
+        raise HTTPException(status_code=503, detail="Riot API no configurada.")
+    payload = {"recent_matches": None, "lp_change": None, "matches_error": None, "today_error": None}
+    try:
+        identity = riot.resolve_identity(platform, game_name, tag_line)
+        payload["recent_matches"] = [asdict(match) for match in
+                                     riot.fetch_recent_matches(platform, identity.puuid)]
+    except RiotApiError as exc:
+        payload["matches_error"] = str(exc)
+    try:
+        summary = riot.fetch_today_summary(game_name, tag_line, platform)
+        payload["lp_change"] = summary.lp_change
+        payload["today_note"] = summary.baseline_note
+    except RiotApiError as exc:
+        payload["today_error"] = str(exc)
+    _set_cached_response(key, payload, 90)
     return payload
 
 

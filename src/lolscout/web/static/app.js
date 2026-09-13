@@ -12,7 +12,6 @@ let contentRequestId = 0;
 const viewCopy = {
   home: ["MMRQ Challenge", "El grupo MMR, en una sola vista."],
   ranking: ["Ranking SoloQ", "Clasificación oficial, LP y rendimiento del grupo."],
-  today: ["Lo que ha pasado hoy", "Balance de LP desde las 00:00 y partidas recientes."],
   live: ["En partida", "Estado actual del grupo y composiciones detectadas."],
   builds: ["Builds por campeón", "Consulta las builds de cada campeón en Lolalytics."],
 };
@@ -81,10 +80,9 @@ function renderHome() {
       <div class="home-hero-badges"><span>League of Legends</span><span>${escapeHtml(champion)}</span></div>
       <div class="home-hero-copy"><p class="eyebrow">El reto del grupo MMR</p><h2>MMRQ<br>Challenge</h2><p>Nuestros rangos, LP y cada partida de hoy.</p><button class="home-primary" data-target="ranking">Ver jugadores</button></div>
       <nav class="home-actions" aria-label="Accesos directos">
-        <button data-target="today"><span class="home-action-number">01</span><strong>Hoy</strong><small>LP del día</small></button>
-        <button data-target="ranking"><span class="home-action-number">02</span><strong>Ranking</strong><small>SoloQ</small></button>
-        <button data-target="builds"><span class="home-action-number">03</span><strong>Builds</strong><small>Lolalytics</small></button>
-        <button data-target="live"><span class="home-action-number">04</span><strong>En partida</strong><small>Live</small></button>
+        <button data-target="ranking"><span class="home-action-number">01</span><strong>Ranking</strong><small>SoloQ y LP de hoy</small></button>
+        <button data-target="builds"><span class="home-action-number">02</span><strong>Builds</strong><small>Lolalytics</small></button>
+        <button data-target="live"><span class="home-action-number">03</span><strong>En partida</strong><small>Live</small></button>
       </nav>
     </section>
   </div>`;
@@ -147,32 +145,57 @@ function renderRanking(data) {
     const opggLink = p.opgg_url
       ? `<a class="opgg-link" href="${escapeHtml(p.opgg_url)}" target="_blank" rel="noopener noreferrer" title="Abrir ${escapeHtml(p.game_name)} en OP.GG" aria-label="Abrir ${escapeHtml(p.game_name)} en OP.GG"><img src="/static/assets/opgg-logo.svg" alt=""></a>`
       : `<span class="opgg-link is-disabled" aria-hidden="true"><img src="/static/assets/opgg-logo.svg" alt=""></span>`;
-    return `<article class="player-row" data-position="${index + 1}">
+    return `<article class="player-row" data-position="${index + 1}" data-player-index="${index}">
       <div class="position">${index + 1}</div>
       ${playerIdentity(p)}
       <div class="rank">${escapeHtml(rank)}</div>
+      <div class="recent-games" aria-label="Últimas cinco partidas SoloQ"><span class="row-label">Últimas 5 · SoloQ</span><div class="recent-strip" aria-busy="true">${'<span class="match-placeholder"></span>'.repeat(5)}</div></div>
+      <div class="metric today-metric" title="Balance de LP desde las 00:00"><strong aria-busy="true">…</strong><span>Hoy</span></div>
       <div class="metric winrate"><strong>${winrate}</strong><span>Winrate</span></div>
       <div class="metric games"><strong>${games}</strong><span>Partidas</span></div>
       ${opggLink}
     </article>`;
   }).join("");
-  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>WR</span><span>Partidas</span><span class="sr-only">OP.GG</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
+  content.innerHTML = `<div class="ranking-head"><span>#</span><span>Jugador</span><span>Rango</span><span>Últimas 5 · SoloQ</span><span>Hoy</span><span>WR</span><span>Partidas</span><span class="sr-only">OP.GG</span></div><div class="player-list">${rows || "<p>Sin jugadores configurados.</p>"}</div>`;
 }
 
-function renderToday(data) {
-  const cards = data.players.map(result => {
-    if (!result.ok) return `<article class="summary-card is-error"><h2>${escapeHtml(result.riot_id)}</h2><p>${escapeHtml(result.error)}</p></article>`;
-    const s = result.summary;
-    const changeClass = s.lp_change > 0 ? "positive" : s.lp_change < 0 ? "negative" : "";
-    const emptyMatches = result.source === "riot" ? "Sin SoloQ hoy" : "Historial no disponible";
-    const matches = (s.today_matches || []).map(match => {
-      const outcome = match.won ? "Victoria" : "Derrota";
-      const label = `${outcome} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists}`;
-      return `<span class="match-result ${match.won ? "win" : "loss"}" data-outcome="${match.won ? "W" : "L"}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${championIconUrl(match.champion_id)}" alt="" loading="lazy"></span>`;
-    }).join("");
-    return `<article class="summary-card today-card ${changeClass || "neutral"}"><header>${playerIdentity(s.player)}</header><div class="lp-change ${changeClass}">${escapeHtml(s.change_text)}</div><p>${escapeHtml(s.current_rank_text || "Sin datos de SoloQ")}</p><div class="match-strip">${matches || `<span>${emptyMatches}</span>`}</div></article>`;
-  }).join("");
-  content.innerHTML = `<div class="summary-grid">${cards}</div>`;
+function renderRowActivity(row, activity) {
+  const strip = row.querySelector(".recent-strip");
+  strip.setAttribute("aria-busy", "false");
+  strip.innerHTML = activity.recent_matches?.length
+    ? activity.recent_matches.slice(0, 5).map(match => {
+      const label = `${match.won ? "Victoria" : "Derrota"} · ${match.champion} · ${match.kills}/${match.deaths}/${match.assists} · ${match.played_at_iso ? new Date(match.played_at_iso).toLocaleString("es-ES") : ""}`;
+      return `<span class="match-result ${match.won ? "win" : "loss"}" data-outcome="${match.won ? "W" : "L"}" tabindex="0" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img src="${escapeHtml(championIconUrl(match.champion_id))}" alt="" loading="lazy"></span>`;
+    }).join("")
+    : `<span class="activity-empty" title="${escapeHtml(activity.matches_error || "")}">${activity.matches_error ? "No disponible" : "Sin partidas SoloQ"}</span>`;
+  const metric = row.querySelector(".today-metric");
+  const lp = activity.lp_change;
+  metric.classList.toggle("positive", lp != null && lp > 0);
+  metric.classList.toggle("negative", lp != null && lp < 0);
+  metric.title = activity.today_error || activity.today_note || "Balance de LP desde las 00:00";
+  const value = metric.querySelector("strong");
+  value.textContent = lp == null ? "—" : `${lp > 0 ? "+" : ""}${lp} LP`;
+  value.setAttribute("aria-busy", "false");
+}
+
+async function loadRankingActivity(data, request) {
+  // Load one player at a time to avoid bursts against Riot's rate limits.
+  for (const [index, result] of data.players.entries()) {
+    if (!isCurrentContentRequest(request)) return;
+    if (!result.ok) continue;
+    const row = content.querySelector(`[data-player-index="${index}"]`);
+    const params = new URLSearchParams({
+      platform: state.platform, game_name: result.player.game_name, tag_line: result.player.tag_line,
+    });
+    try {
+      const activity = await getJson(`/api/ranking/activity?${params}`, { signal: request.controller.signal });
+      if (!isCurrentContentRequest(request)) return;
+      renderRowActivity(row, activity);
+    } catch (error) {
+      if (!isCurrentContentRequest(request) || error.name === "AbortError") return;
+      renderRowActivity(row, { recent_matches: null, lp_change: null, matches_error: error.message, today_error: error.message });
+    }
+  }
 }
 
 function renderLive(data) {
@@ -216,14 +239,15 @@ async function loadView(force = false) {
     const options = { signal: request.controller.signal };
     let data;
     if (view === "ranking") data = await getJson(`/api/ranking?platform=${state.platform}&force_refresh=${force}`, options);
-    if (view === "today") data = await getJson(`/api/today?platform=${state.platform}&force_refresh=${force}`, options);
     if (view === "live") data = await getJson(`/api/live?platform=${state.platform}`, options);
     if (view === "builds" && (!state.champions || force)) {
       data = await getJson(`/api/builds/champions?force_refresh=${force}`, options);
     }
     if (!isCurrentContentRequest(request)) return;
-    if (view === "ranking") renderRanking(data);
-    if (view === "today") renderToday(data);
+    if (view === "ranking") {
+      renderRanking(data);
+      await loadRankingActivity(data, request);
+    }
     if (view === "live") renderLive(data);
     if (view === "builds") {
       if (data) state.champions = data.champions;
@@ -241,7 +265,8 @@ async function initialise() {
     state.config = await getJson("/api/config");
     try { state.champions = (await getJson("/api/builds/champions")).champions; } catch { state.champions = null; }
     state.platform = state.config.default_platform;
-    const requestedView = location.hash.slice(1);
+    const requestedView = location.hash.slice(1) === "today" ? "ranking" : location.hash.slice(1);
+    if (location.hash === "#today") history.replaceState(null, "", "#ranking");
     if (Object.hasOwn(viewCopy, requestedView)) state.view = requestedView;
     document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("is-active", tab.dataset.view === state.view));
     await loadView();
@@ -312,6 +337,11 @@ function navigateTo(view) {
 }
 
 document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => navigateTo(button.dataset.view)));
+window.addEventListener("hashchange", () => {
+  const view = location.hash.slice(1) === "today" ? "ranking" : location.hash.slice(1);
+  if (location.hash === "#today") history.replaceState(null, "", "#ranking");
+  if (Object.hasOwn(viewCopy, view) && view !== state.view) navigateTo(view);
+});
 document.querySelector("#refresh").addEventListener("click", () => loadView(true));
 document.querySelector("#settings").addEventListener("click", openSettings);
 document.querySelector("#add-player").addEventListener("click", () => addPlayerField());

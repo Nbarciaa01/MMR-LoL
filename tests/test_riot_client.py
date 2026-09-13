@@ -113,6 +113,19 @@ class RiotClientTests(unittest.TestCase):
         self.assertIn("matches/by-puuid/player-puuid/ids", list_url)
         self.assertIn("queue=420", list_url)
 
+    def test_recent_matches_include_previous_days_and_are_limited_to_five(self) -> None:
+        now = app_now()
+        matches = [Mock(played_at_iso=(now - timedelta(days=i + 1)).isoformat())
+                   for i in range(5)]
+        self.client._get_json = Mock(side_effect=[["m1", "m2", "m3", "m4", "m5"]] + [{}] * 5)
+        self.client._match_summary = Mock(side_effect=matches)
+        result = self.client.fetch_recent_matches("EUW1", "player-puuid")
+        self.assertEqual(result, matches)
+        url = self.client._get_json.call_args_list[0].args[0]
+        self.assertIn("count=5", url)
+        self.assertIn("queue=420", url)
+        self.assertNotIn("startTime", url)
+
     def test_today_summary_recovers_pre_match_baseline_from_history(self) -> None:
         now = app_now()
         played_at = now - timedelta(minutes=10)
